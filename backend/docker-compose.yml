@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: coolpapers-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://coolpapers:coolpapers_pass@db:5432/coolpapers
+      - REDIS_URL=redis://redis:6379/0
+      - CACHE_ENABLED=true
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./pdf_cache:/app/pdf_cache
+      - ./search_index:/app/search_index
+    restart: unless-stopped
+    networks:
+      - coolpapers-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: coolpapers-db
+    environment:
+      POSTGRES_DB: coolpapers
+      POSTGRES_USER: coolpapers
+      POSTGRES_PASSWORD: coolpapers_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - coolpapers-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: coolpapers-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - coolpapers-network
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: coolpapers-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - coolpapers-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  coolpapers-network:
+    driver: bridge
