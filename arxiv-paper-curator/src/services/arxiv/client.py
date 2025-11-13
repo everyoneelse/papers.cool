@@ -260,6 +260,7 @@ class ArxivClient:
         sort_by: str = "submittedDate",
         sort_order: str = "descending",
         use_china_timezone: bool = False,
+        max_retries_per_page: int = 5,
     ) -> tuple[List[ArxivPaper], List[ArxivSearchResult]]:
         """
         Fetch ALL papers from arXiv for the configured category within a date range.
@@ -273,6 +274,7 @@ class ArxivClient:
             sort_by: Sort criteria (submittedDate, lastUpdatedDate, relevance)
             sort_order: Sort order (ascending, descending)
             use_china_timezone: Whether from_date/to_date are in China timezone (UTC+8)
+            max_retries_per_page: Maximum retry attempts per page before skipping (default: 5)
 
         Returns:
             Tuple of (all_papers, all_results) where:
@@ -281,73 +283,122 @@ class ArxivClient:
         """
         all_papers = []
         all_results = []
+        failed_pages = []  # Track pages that failed after all retries
         start = 0
 
         logger.info(f"Starting to fetch ALL {self.search_category} papers from {from_date} to {to_date}")
 
         while True:
-            try:
-                # Fetch one page
-                result = await self.fetch_papers(
-                    max_results=min(max_per_page, 1000),  # arXiv limit is 1000 per request
-                    start=start,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    from_date=from_date,
-                    to_date=to_date,
-                    use_china_timezone=use_china_timezone,
-                )
+            page_retry_count = 0
+            page_fetched = False
+            
+            # Try to fetch current page with limited retries
+            while page_retry_count < max_retries_per_page:
+                try:
+                    # Fetch one page
+                    result = await self.fetch_papers(
+                        max_results=min(max_per_page, 1000),  # arXiv limit is 1000 per request
+                        start=start,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        from_date=from_date,
+                        to_date=to_date,
+                        use_china_timezone=use_china_timezone,
+                    )
 
-                batch = result.papers
-                if not batch:
-                    # No more papers
-                    logger.info(f"No more papers found (start={start})")
-                    break
+                    batch = result.papers
+                    if not batch:
+                        # No more papers
+                        logger.info(f"No more papers found (start={start})")
+                        page_fetched = True
+                        break
 
-                all_papers.extend(batch)
-                all_results.append(result)
-                logger.info(
-                    f"Fetched {len(batch)} papers (total so far: {len(all_papers)}/{result.total_results}), "
-                    f"next start: {start + len(batch)}"
-                )
+                    all_papers.extend(batch)
+                    all_results.append(result)
+                    logger.info(
+                        f"Fetched {len(batch)} papers (total so far: {len(all_papers)}/{result.total_results}), "
+                        f"next start: {start + len(batch)}"
+                    )
+                    
+                    page_fetched = True
+                    break  # Successfully fetched this page
 
-                # Check if we've reached the total limit
-                if max_total_papers and len(all_papers) >= max_total_papers:
-                    all_papers = all_papers[:max_total_papers]
-                    logger.info(f"Reached max_total_papers limit: {max_total_papers}")
-                    break
-
-                # Check if this was the last page (less than requested or reached total)
-                if len(batch) < max_per_page:
-                    logger.info(f"Received less than max_per_page ({len(batch)} < {max_per_page}), last page reached")
-                    break
+                except (ArxivAPITimeoutError, ArxivAPIException) as e:
+                    page_retry_count += 1
+                    if page_retry_count < max_retries_per_page:
+                        wait_time = 10 * page_retry_count  # Exponential backoff: 10s, 20s, 30s, 40s, 50s
+                        logger.warning(
+                            f"API error at start={start} (attempt {page_retry_count}/{max_retries_per_page}): {e}. "
+                            f"Retrying in {wait_time} seconds..."
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"Failed to fetch page at start={start} after {max_retries_per_page} attempts. "
+                            f"Skipping this page and continuing..."
+                        )
+                        failed_pages.append(start)
+                        break
                 
-                # Check if we've fetched all available papers
-                if len(all_papers) >= result.total_results:
-                    logger.info(f"Fetched all available papers ({len(all_papers)} >= {result.total_results})")
-                    break
-
-                # Move to next page
-                start += len(batch)
-
-                # Safety check to prevent infinite loops
-                if start > 10000:  # Reasonable upper limit
-                    logger.warning(f"Safety limit reached at start={start}, stopping pagination")
-                    break
-
-            except (ArxivAPITimeoutError, ArxivAPIException) as e:
-                # Log error but continue - we want to be resilient to temporary failures
-                logger.warning(f"API error at start={start}: {e}. Retrying in 10 seconds...")
-                await asyncio.sleep(10)
-                # Retry this page
+                except Exception as e:
+                    # Unexpected error - log and retry
+                    page_retry_count += 1
+                    if page_retry_count < max_retries_per_page:
+                        logger.error(f"Unexpected error at start={start} (attempt {page_retry_count}/{max_retries_per_page}): {e}")
+                        await asyncio.sleep(10 * page_retry_count)
+                    else:
+                        logger.error(f"Failed to fetch page at start={start} after unexpected errors. Skipping...")
+                        failed_pages.append(start)
+                        break
+            
+            # If no papers were fetched and we're at the beginning, something is seriously wrong
+            if not page_fetched and start == 0:
+                logger.error("Failed to fetch first page. Cannot continue.")
+                break
+            
+            # If this page failed but we have papers, continue to next page
+            if not page_fetched and len(all_papers) > 0:
+                logger.warning(f"Skipping failed page at start={start}, continuing to next page")
+                start += max_per_page  # Move to next page
                 continue
             
-            except Exception as e:
-                # Unexpected error - log and stop
-                logger.error(f"Unexpected error during pagination at start={start}: {e}")
+            # Check termination conditions
+            if not batch or len(batch) == 0:
+                break
+            
+            # Check if we've reached the total limit
+            if max_total_papers and len(all_papers) >= max_total_papers:
+                all_papers = all_papers[:max_total_papers]
+                logger.info(f"Reached max_total_papers limit: {max_total_papers}")
                 break
 
-        logger.info(f"Completed fetching ALL papers: {len(all_papers)} total papers retrieved")
+            # Check if this was the last page
+            if len(batch) < max_per_page:
+                logger.info(f"Received less than max_per_page ({len(batch)} < {max_per_page}), last page reached")
+                break
+            
+            # Check if we've fetched all available papers
+            if result and len(all_papers) >= result.total_results:
+                logger.info(f"Fetched all available papers ({len(all_papers)} >= {result.total_results})")
+                break
+
+            # Move to next page
+            start += len(batch)
+
+            # Safety check to prevent infinite loops
+            if start > 10000:  # Reasonable upper limit
+                logger.warning(f"Safety limit reached at start={start}, stopping pagination")
+                break
+
+        # Report results
+        if failed_pages:
+            logger.warning(
+                f"Completed with {len(failed_pages)} failed pages at positions: {failed_pages}. "
+                f"Total papers retrieved: {len(all_papers)}. Some papers may be missing."
+            )
+        else:
+            logger.info(f"Successfully fetched ALL papers: {len(all_papers)} total papers retrieved")
+        
         return all_papers, all_results
 
     def _parse_response(self, xml_data: str, search_query: str = "", start: int = 0, max_results: int = 0) -> ArxivSearchResult:

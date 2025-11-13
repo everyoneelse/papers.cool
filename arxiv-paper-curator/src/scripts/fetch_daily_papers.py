@@ -75,7 +75,7 @@ class DailyPapersFetcher:
         from_date: str,
         to_date: str,
         retry_attempts: int = MAX_RETRY_ATTEMPTS,
-    ) -> List[Dict]:
+    ) -> tuple[List[Dict], bool, Optional[str]]:
         """
         Fetch papers for a single category with retry logic.
 
@@ -86,8 +86,14 @@ class DailyPapersFetcher:
             retry_attempts: Maximum number of retry attempts
 
         Returns:
-            List of paper dictionaries with essential fields
+            Tuple of (papers, success, error_message):
+                - papers: List of paper dictionaries with essential fields (may be partial)
+                - success: True if fully successful, False if had errors
+                - error_message: Error description if failed, None if successful
         """
+        best_result = []  # Keep track of the best (longest) result we got
+        last_error = None
+        
         for attempt in range(1, retry_attempts + 1):
             try:
                 logger.info(f"[{category}] Attempt {attempt}/{retry_attempts}: Fetching papers from {from_date} to {to_date}")
@@ -103,9 +109,8 @@ class DailyPapersFetcher:
                     max_per_page=100,  # Reasonable page size
                     sort_by="submittedDate",
                     sort_order="descending",
+                    max_retries_per_page=5,  # Allow retries per page
                 )
-                
-                logger.info(f"[{category}] Successfully fetched {len(papers)} papers")
                 
                 # Convert to simplified format (only essential fields)
                 simplified_papers = []
@@ -121,24 +126,59 @@ class DailyPapersFetcher:
                         "pdf_url": paper.pdf_url,
                     })
                 
-                return simplified_papers
+                # Check if we got all expected papers
+                if results and len(results) > 0:
+                    expected_total = results[0].total_results
+                    if len(simplified_papers) >= expected_total:
+                        logger.info(f"[{category}] Successfully fetched ALL {len(simplified_papers)}/{expected_total} papers")
+                        return simplified_papers, True, None
+                    else:
+                        logger.warning(
+                            f"[{category}] Partially fetched {len(simplified_papers)}/{expected_total} papers "
+                            f"({len(simplified_papers)/expected_total*100:.1f}%)"
+                        )
+                        # Keep this result if it's better than previous attempts
+                        if len(simplified_papers) > len(best_result):
+                            best_result = simplified_papers
+                        
+                        # If we got most of the papers (>90%), consider it good enough
+                        if len(simplified_papers) / expected_total > 0.9:
+                            logger.info(f"[{category}] Got >90% of papers, accepting as complete")
+                            return simplified_papers, True, None
+                else:
+                    # No results metadata, but we got some papers
+                    if simplified_papers:
+                        logger.info(f"[{category}] Fetched {len(simplified_papers)} papers (total unknown)")
+                        return simplified_papers, True, None
+                
+                # If we got here, we have partial results - will retry
+                last_error = f"Incomplete fetch: got {len(simplified_papers)}/{expected_total if results else 'unknown'} papers"
                 
             except Exception as e:
+                last_error = str(e)
                 logger.error(f"[{category}] Attempt {attempt}/{retry_attempts} failed: {e}")
                 
                 if attempt < retry_attempts:
                     wait_time = RETRY_DELAY_SECONDS * attempt  # Exponential backoff
                     logger.info(f"[{category}] Retrying in {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"[{category}] Failed after {retry_attempts} attempts")
-                    return []
+        
+        # All retries exhausted
+        if best_result:
+            logger.warning(
+                f"[{category}] Failed to fetch all papers after {retry_attempts} attempts. "
+                f"Returning best partial result: {len(best_result)} papers"
+            )
+            return best_result, False, f"Partial fetch: {last_error}"
+        else:
+            logger.error(f"[{category}] Failed completely after {retry_attempts} attempts: {last_error}")
+            return [], False, f"Complete failure: {last_error}"
 
     async def fetch_papers_for_date(
         self,
         date: datetime,
         categories: Optional[List[str]] = None,
-    ) -> Dict[str, List[Dict]]:
+    ) -> tuple[Dict[str, List[Dict]], Dict[str, str]]:
         """
         Fetch papers for all categories on a specific date.
 
@@ -147,7 +187,9 @@ class DailyPapersFetcher:
             categories: List of categories to fetch (default: all configured categories)
 
         Returns:
-            Dictionary mapping category codes to paper lists
+            Tuple of (papers_by_category, failed_categories):
+                - papers_by_category: Dictionary mapping category codes to paper lists
+                - failed_categories: Dictionary mapping failed category codes to error messages
         """
         date_str = date.strftime("%Y%m%d")
         categories_to_fetch = categories or self.categories
@@ -166,25 +208,47 @@ class DailyPapersFetcher:
         
         results = await asyncio.gather(*tasks)
         
-        # Build result dictionary
+        # Build result dictionaries
         papers_by_category = {}
-        for category, papers in zip(categories_to_fetch, results):
-            papers_by_category[category] = papers
-            logger.info(f"[{category}] Retrieved {len(papers)} papers for {date_str}")
+        failed_categories = {}
+        partial_categories = {}
         
-        return papers_by_category
+        for category, (papers, success, error_msg) in zip(categories_to_fetch, results):
+            papers_by_category[category] = papers
+            
+            if success:
+                logger.info(f"[{category}] ✓ Successfully retrieved {len(papers)} papers for {date_str}")
+            elif papers:
+                logger.warning(f"[{category}] ⚠ Partially retrieved {len(papers)} papers for {date_str}: {error_msg}")
+                partial_categories[category] = error_msg
+            else:
+                logger.error(f"[{category}] ✗ Failed to retrieve papers for {date_str}: {error_msg}")
+                failed_categories[category] = error_msg
+        
+        # Summary
+        success_count = len(categories_to_fetch) - len(failed_categories) - len(partial_categories)
+        if failed_categories:
+            logger.error(f"Summary: {success_count} succeeded, {len(partial_categories)} partial, {len(failed_categories)} failed")
+        elif partial_categories:
+            logger.warning(f"Summary: {success_count} succeeded, {len(partial_categories)} partial")
+        else:
+            logger.info(f"Summary: All {success_count} categories fetched successfully!")
+        
+        return papers_by_category, failed_categories
 
     def save_papers_to_json(
         self,
         papers_by_category: Dict[str, List[Dict]],
         date: datetime,
+        failed_categories: Optional[Dict[str, str]] = None,
     ) -> Path:
         """
-        Save papers to a JSON file.
+        Save papers to a JSON file with metadata about fetch status.
 
         Args:
             papers_by_category: Dictionary mapping categories to paper lists
             date: Date the papers were published
+            failed_categories: Dictionary of failed/partial categories with error messages
 
         Returns:
             Path to the saved JSON file
@@ -206,19 +270,42 @@ class DailyPapersFetcher:
         
         papers_list = list(unique_papers.values())
         
+        # Build metadata
+        metadata = {
+            "fetch_date": datetime.now().isoformat(),
+            "paper_date": date_str,
+            "total_papers": len(papers_list),
+            "categories_fetched": list(papers_by_category.keys()),
+            "papers_per_category": {cat: len(papers) for cat, papers in papers_by_category.items()},
+        }
+        
+        if failed_categories:
+            metadata["failed_categories"] = failed_categories
+            metadata["fetch_status"] = "partial"
+        else:
+            metadata["fetch_status"] = "complete"
+        
+        # Build final output
+        output_data = {
+            "metadata": metadata,
+            "papers": papers_list,
+        }
+        
         # Save to JSON
         with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(papers_list, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Saved {len(papers_list)} unique papers to {output_file}")
+        status_msg = "complete" if not failed_categories else f"partial ({len(failed_categories)} categories had issues)"
+        logger.info(f"Saved {len(papers_list)} unique papers to {output_file} (status: {status_msg})")
         return output_file
 
-    async def fetch_and_save_daily(self, date: Optional[datetime] = None):
+    async def fetch_and_save_daily(self, date: Optional[datetime] = None, force_refetch: bool = False):
         """
         Fetch papers for a specific date and save to JSON.
 
         Args:
             date: Date to fetch papers for (default: today)
+            force_refetch: Force re-fetch even if file exists
         """
         if date is None:
             date = datetime.now()
@@ -230,23 +317,54 @@ class DailyPapersFetcher:
         
         # Check if we already have data for this date
         output_file = self.output_dir / f"papers_{date_str}.json"
-        if output_file.exists():
-            logger.info(f"Papers for {date_str} already exist at {output_file}")
-            logger.info(f"Skipping fetch (delete file to re-fetch)")
-            return output_file
+        if output_file.exists() and not force_refetch:
+            # Check if previous fetch was partial
+            try:
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                    # Check for old format (list) or new format (dict with metadata)
+                    if isinstance(existing_data, dict) and 'metadata' in existing_data:
+                        fetch_status = existing_data['metadata'].get('fetch_status', 'unknown')
+                        if fetch_status == 'partial':
+                            failed_cats = existing_data['metadata'].get('failed_categories', {})
+                            logger.warning(f"Previous fetch was partial. Failed categories: {list(failed_cats.keys())}")
+                            logger.info(f"Attempting to re-fetch failed categories...")
+                            # Will continue to re-fetch
+                        else:
+                            logger.info(f"Papers for {date_str} already exist at {output_file} (status: complete)")
+                            logger.info(f"Use force_refetch=True to re-fetch")
+                            return output_file
+                    else:
+                        # Old format, assume complete
+                        logger.info(f"Papers for {date_str} already exist at {output_file}")
+                        logger.info(f"Use force_refetch=True to re-fetch")
+                        return output_file
+            except Exception as e:
+                logger.warning(f"Error reading existing file: {e}. Will re-fetch.")
         
         # Fetch papers
-        papers_by_category = await self.fetch_papers_for_date(date)
+        papers_by_category, failed_categories = await self.fetch_papers_for_date(date)
         
         # Save to JSON
-        saved_file = self.save_papers_to_json(papers_by_category, date)
+        saved_file = self.save_papers_to_json(papers_by_category, date, failed_categories)
         
         # Summary
         total_papers = sum(len(papers) for papers in papers_by_category.values())
+        logger.info(f"="*80)
         logger.info(f"Daily fetch complete for {date_str}:")
         logger.info(f"  - Total papers fetched: {total_papers}")
         logger.info(f"  - Categories: {len(papers_by_category)}")
         logger.info(f"  - Output file: {saved_file}")
+        
+        if failed_categories:
+            logger.warning(f"  ⚠ Warning: {len(failed_categories)} categories had issues:")
+            for cat, error in failed_categories.items():
+                logger.warning(f"    - {cat}: {error}")
+            logger.warning(f"  You may want to re-run this date later to get missing papers")
+        else:
+            logger.info(f"  ✓ All categories fetched successfully!")
+        
+        logger.info(f"="*80)
         
         return saved_file
 
