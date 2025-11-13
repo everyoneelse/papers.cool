@@ -262,13 +262,11 @@ def create_app():
         
         # 搜索区域
         gr.Markdown("### 🔍 Search Papers")
-        with gr.Row():
-            search_box = gr.Textbox(
-                label="Search Query",
-                placeholder="Enter keywords to search in titles and abstracts (or leave empty to show all papers)",
-                scale=4
-            )
-            search_button = gr.Button("🔍 Search / Refresh", variant="primary", scale=1)
+        search_box = gr.Textbox(
+            label="Search Query",
+            placeholder="Enter keywords to search in titles and abstracts (or leave empty to show all papers)"
+        )
+        search_button = gr.Button("🔍 Search / Refresh", variant="primary")
         
         # 状态信息
         status_text = gr.Textbox(
