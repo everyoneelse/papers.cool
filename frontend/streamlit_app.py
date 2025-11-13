@@ -33,6 +33,17 @@ ARXIV_CATEGORIES = {
     "Statistics - Machine Learning (stat.ML)": "stat.ML",
 }
 
+# 分类颜色定义
+CATEGORY_COLORS = {
+    "cs.AI": "#FF6B6B",      # 红色
+    "cs.CL": "#4ECDC4",      # 青色
+    "cs.CV": "#45B7D1",      # 蓝色
+    "cs.LG": "#96CEB4",      # 绿色
+    "cs.NE": "#FFEAA7",      # 黄色
+    "cs.CC": "#DFE6E9",      # 灰色
+    "stat.ML": "#A29BFE",    # 紫色
+}
+
 # 初始化 session state
 if "selected_categories" not in st.session_state:
     st.session_state.selected_categories = ["cs.AI", "cs.LG"]
@@ -99,6 +110,32 @@ def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
             results.append(paper)
     
     return results
+
+
+def render_category_tags(categories: List[str]):
+    """渲染彩色分类标签"""
+    tags_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0;">'
+    
+    for cat in categories:
+        color = CATEGORY_COLORS.get(cat, "#95A5A6")  # 默认灰色
+        tags_html += f'''
+            <span style="
+                background-color: {color}; 
+                color: white; 
+                padding: 6px 16px; 
+                border-radius: 20px; 
+                font-size: 14px; 
+                font-weight: 500;
+                display: inline-block;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+                transition: transform 0.2s;
+            ">
+                🏷️ {cat}
+            </span>
+        '''
+    
+    tags_html += '</div>'
+    return tags_html
 
 
 def render_paper_card(paper: Dict):
@@ -175,6 +212,10 @@ def main():
         padding: 10px;
         margin: 10px 0;
     }
+    /* 标签悬停效果 */
+    span:hover {
+        transform: translateY(-2px);
+    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -192,6 +233,11 @@ def main():
         selected_cats = []
         for cat_name, cat_code in ARXIV_CATEGORIES.items():
             is_selected = cat_code in st.session_state.selected_categories
+            
+            # 使用颜色点作为视觉提示
+            color = CATEGORY_COLORS.get(cat_code, "#95A5A6")
+            color_dot = f'<span style="color: {color}; font-size: 20px;">●</span> '
+            
             if st.checkbox(cat_name, value=is_selected, key=f"cat_{cat_code}"):
                 selected_cats.append(cat_code)
         
@@ -215,9 +261,11 @@ def main():
     
     st.markdown("---")
     
-    # 显示当前选择的分类
+    # 显示当前选择的分类 - 使用彩色标签
     if st.session_state.selected_categories:
-        st.info(f"🔬 **Current Categories:** {', '.join(st.session_state.selected_categories)}")
+        st.markdown("### 🔬 Current Selected Categories")
+        tags_html = render_category_tags(st.session_state.selected_categories)
+        st.markdown(tags_html, unsafe_allow_html=True)
     else:
         st.warning("⚠️ Please select at least one category from the sidebar")
     
