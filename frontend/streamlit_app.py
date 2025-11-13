@@ -1,14 +1,15 @@
 """
-Cool Papers - Streamlit Frontend
-沉浸式刷论文！Immersive Paper Discovery
+Cool Papers - Simplified Streamlit Frontend
+简化的Streamlit前端 - 单页面论文浏览和搜索
 """
 
 import streamlit as st
 from datetime import datetime, timedelta
-import httpx
+import pandas as pd
 from typing import List, Dict, Optional
 import json
-from urllib.parse import quote
+import os
+from pathlib import Path
 
 # 页面配置
 st.set_page_config(
@@ -18,76 +19,110 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 后端 API 地址
-API_BASE_URL = st.secrets.get("API_BASE_URL", "http://localhost:8000")
-
-# 初始化 session state
-if "starred_papers" not in st.session_state:
-    st.session_state.starred_papers = set()
-if "viewed_papers" not in st.session_state:
-    st.session_state.viewed_papers = set()
-if "selected_categories" not in st.session_state:
-    st.session_state.selected_categories = ["cs.AI", "cs.CL", "cs.LG"]
-
+# 数据目录 - 假设论文数据按日期存储为JSON文件
+DATA_DIR = os.getenv("DATA_DIR", "./papers_data")
 
 # ArXiv 分类定义
 ARXIV_CATEGORIES = {
-    "Artificial Intelligence (cs.AI)": ["cs.AI", "Computer Science - Artificial Intelligence"],
-    "Computation and Language (cs.CL)": ["cs.CL", "Computer Science - Computation and Language"],
-    "Computer Vision (cs.CV)": ["cs.CV", "Computer Science - Computer Vision and Pattern Recognition"],
-    "Machine Learning (cs.LG)": ["cs.LG", "Computer Science - Machine Learning"],
-    "Neural and Evolutionary Computing (cs.NE)": ["cs.NE", "Computer Science - Neural and Evolutionary Computing"],
-    "Computational Complexity (cs.CC)": ["cs.CC", "Computer Science - Computational Complexity"],
-    "Statistics - Machine Learning (stat.ML)": ["stat.ML", "Statistics - Machine Learning"],
+    "Artificial Intelligence (cs.AI)": "cs.AI",
+    "Computation and Language (cs.CL)": "cs.CL",
+    "Computer Vision (cs.CV)": "cs.CV",
+    "Machine Learning (cs.LG)": "cs.LG",
+    "Neural and Evolutionary Computing (cs.NE)": "cs.NE",
+    "Computational Complexity (cs.CC)": "cs.CC",
+    "Statistics - Machine Learning (stat.ML)": "stat.ML",
 }
 
+# 初始化 session state
+if "selected_categories" not in st.session_state:
+    st.session_state.selected_categories = ["cs.AI", "cs.LG"]
 
 
-def api_get(endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
-    """调用后端 API"""
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(f"{API_BASE_URL}{endpoint}", params=params)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        st.error(f"API 错误: {str(e)}")
-        return None
-
-
-def render_paper_card(paper: Dict, show_pdf: bool = False, show_kimi: bool = False):
-    """渲染单个论文卡片"""
-    paper_id = paper.get("id", "")
-    is_starred = paper_id in st.session_state.starred_papers
-    is_viewed = paper_id in st.session_state.viewed_papers
+def load_papers_from_json(date_str: str) -> List[Dict]:
+    """
+    从JSON文件加载指定日期的论文数据
+    假设文件命名格式为: papers_YYYY-MM-DD.json
+    """
+    data_path = Path(DATA_DIR)
+    json_file = data_path / f"papers_{date_str}.json"
     
-    # 论文容器
+    if not json_file.exists():
+        return []
+    
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            papers = json.load(f)
+            return papers if isinstance(papers, list) else []
+    except Exception as e:
+        st.error(f"Error loading papers from {json_file}: {e}")
+        return []
+
+
+def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> List[Dict]:
+    """根据选择的分类过滤论文"""
+    if not categories:
+        return papers
+    
+    # 转换分类名称为代码
+    category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in categories]
+    
+    filtered = []
+    for paper in papers:
+        paper_categories = paper.get("categories", [])
+        if isinstance(paper_categories, str):
+            paper_categories = [paper_categories]
+        
+        # 检查论文是否属于任一选中的分类
+        if any(cat in paper_categories for cat in category_codes):
+            filtered.append(paper)
+    
+    return filtered
+
+
+def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
+    """
+    在论文中搜索（搜索标题和摘要）
+    简单的字符串匹配实现
+    """
+    if not query:
+        return papers
+    
+    query_lower = query.lower()
+    results = []
+    
+    for paper in papers:
+        title = paper.get("title", "").lower()
+        abstract = paper.get("abstract", "").lower()
+        
+        # 简单的字符串匹配
+        if query_lower in title or query_lower in abstract:
+            results.append(paper)
+    
+    return results
+
+
+def render_paper_card(paper: Dict):
+    """渲染单个论文卡片"""
     with st.container():
-        # 标题行
-        col1, col2 = st.columns([10, 1])
+        # 标题
+        title = paper.get("title", "Untitled")
+        url = paper.get("url", "") or paper.get("pdf_url", "")
         
-        with col1:
-            # 论文 ID 和标题
-            title_prefix = f"**#{paper_id.split('@')[0] if '@' in paper_id else paper_id}** " if paper_id else ""
-            st.markdown(f"{title_prefix}{paper.get('title', 'Untitled')}")
-        
-        with col2:
-            # 星标按钮
-            star_icon = "⭐" if is_starred else "☆"
-            if st.button(star_icon, key=f"star_{paper_id}", help="Star this paper"):
-                if is_starred:
-                    st.session_state.starred_papers.discard(paper_id)
-                else:
-                    st.session_state.starred_papers.add(paper_id)
-                st.rerun()
+        if url:
+            st.markdown(f"### [{title}]({url})")
+        else:
+            st.markdown(f"### {title}")
         
         # 作者
         authors = paper.get("authors", [])
         if authors:
-            if len(authors) > 5:
-                author_str = ", ".join(authors[:5]) + " et al."
+            if isinstance(authors, list):
+                if len(authors) > 5:
+                    author_str = ", ".join(authors[:5]) + " et al."
+                else:
+                    author_str = ", ".join(authors)
             else:
-                author_str = ", ".join(authors)
+                author_str = str(authors)
             st.caption(f"👥 {author_str}")
         
         # 分类和发布日期
@@ -95,7 +130,11 @@ def render_paper_card(paper: Dict, show_pdf: bool = False, show_kimi: bool = Fal
         with col1:
             categories = paper.get("categories", [])
             if categories:
-                st.caption(f"🏷️ Categories: {', '.join(categories[:3])}")
+                if isinstance(categories, list):
+                    categories_str = ", ".join(categories[:3])
+                else:
+                    categories_str = str(categories)
+                st.caption(f"🏷️ Categories: {categories_str}")
         
         with col2:
             pub_date = paper.get("published_date")
@@ -108,312 +147,20 @@ def render_paper_card(paper: Dict, show_pdf: bool = False, show_kimi: bool = Fal
             with st.expander("📄 Abstract", expanded=False):
                 st.write(abstract)
         
-        # 操作按钮
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+        # 链接按钮
+        col1, col2, col3 = st.columns([1, 1, 4])
         
         with col1:
             pdf_url = paper.get("pdf_url", "")
             if pdf_url:
-                if st.button("📄 PDF", key=f"pdf_{paper_id}", type="secondary"):
-                    st.session_state.viewed_papers.add(paper_id)
-                    show_pdf = True
+                st.link_button("📄 PDF", pdf_url)
         
         with col2:
-            if st.button("🤖 Kimi", key=f"kimi_{paper_id}", type="secondary"):
-                st.session_state.viewed_papers.add(paper_id)
-                show_kimi = True
-        
-        with col3:
-            paper_url = paper.get("url", "")
-            if paper_url:
-                st.link_button("🔗 Link", paper_url)
-        
-        # PDF 查看器
-        if show_pdf and pdf_url:
-            with st.expander("📄 PDF Viewer", expanded=True):
-                st.markdown(f'<iframe src="{pdf_url}" width="100%" height="800px"></iframe>', 
-                          unsafe_allow_html=True)
-        
-        # Kimi 摘要
-        if show_kimi:
-            with st.expander("🤖 Kimi Summary", expanded=True):
-                with st.spinner("Generating summary..."):
-                    # TODO: 调用 Kimi API
-                    st.info("Kimi summary feature coming soon! Please integrate with Kimi API.")
+            if url:
+                st.link_button("🔗 Link", url)
         
         # 分割线
         st.divider()
-
-
-def page_home():
-    """首页 - 简洁的日期和搜索界面"""
-    st.title("📚 Cool Papers")
-    st.subheader("Immersive Paper Discovery（沉浸式刷论文！）")
-    
-    st.markdown("---")
-    
-    # 日期选择区域
-    st.header("📅 Browse by Date")
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        selected_date = st.date_input(
-            "Select a date to view papers",
-            value=datetime.now(),
-            max_value=datetime.now(),
-            key="home_date_picker"
-        )
-    
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)  # 添加间距对齐按钮
-        if st.button("📖 View Papers", key="view_date_papers", type="primary", use_container_width=True):
-            if st.session_state.selected_categories:
-                st.session_state.arxiv_date = selected_date
-                st.session_state.page = "arxiv"
-                st.rerun()
-            else:
-                st.warning("Please select at least one category from the sidebar first.")
-    
-    st.markdown("---")
-    
-    # 搜索入口
-    st.header("🔍 Search Papers")
-    col1, col2 = st.columns([5, 1])
-    
-    with col1:
-        query = st.text_input("Search by keywords", placeholder="transformer attention mechanism", label_visibility="collapsed")
-    
-    with col2:
-        if st.button("Go", type="primary", use_container_width=True):
-            if query:
-                st.session_state.search_query = query
-                st.session_state.page = "search"
-                st.rerun()
-    
-    st.markdown("---")
-    
-    # 统计信息
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("⭐ Starred Papers", len(st.session_state.starred_papers))
-    
-    with col2:
-        st.metric("👀 Viewed Papers", len(st.session_state.viewed_papers))
-    
-    with col3:
-        st.metric("📂 Selected Categories", len(st.session_state.selected_categories))
-
-
-def page_arxiv():
-    """ArXiv 论文列表页面"""
-    st.title("📚 arXiv Papers")
-    
-    # 返回首页按钮
-    if st.button("🏠 Home", key="home_btn"):
-        st.session_state.page = "home"
-        st.rerun()
-    
-    # 显示选中的分类
-    if not st.session_state.selected_categories:
-        st.warning("Please select at least one category from the home page.")
-        return
-    
-    st.subheader(f"Categories: {', '.join(st.session_state.selected_categories)}")
-    
-    # 日期选择
-    col1, col2, col3 = st.columns([2, 2, 2])
-    
-    with col1:
-        # 使用从首页传递的日期（如果有）
-        default_date = st.session_state.get("arxiv_date", datetime.now())
-        if isinstance(default_date, str):
-            default_date = datetime.strptime(default_date, "%Y-%m-%d")
-        selected_date = st.date_input(
-            "Select date",
-            value=default_date,
-            max_value=datetime.now(),
-            key="arxiv_date"
-        )
-    
-    with col2:
-        sort_by = st.selectbox(
-            "Sort by",
-            ["Latest", "Most Viewed", "Most Starred"],
-            key="sort_by"
-        )
-    
-    with col3:
-        max_results = st.number_input(
-            "Max results",
-            min_value=10,
-            max_value=500,
-            value=100,
-            step=10,
-            key="max_results"
-        )
-    
-    # 获取论文列表
-    with st.spinner("Loading papers..."):
-        data = api_get(
-            "/papers/arxiv/combined",
-            params={
-                "include": ",".join(st.session_state.selected_categories),
-                "date": selected_date.strftime("%Y-%m-%d"),
-                "limit": max_results
-            }
-        )
-    
-    if not data:
-        st.error("Failed to load papers. Please check if the backend is running.")
-        return
-    
-    papers = data.get("papers", [])
-    
-    st.success(f"Found {len(papers)} papers")
-    
-    # 论文筛选
-    with st.expander("🔍 Filter Papers", expanded=False):
-        filter_query = st.text_input("Filter by keywords (in title/abstract)", key="filter_query")
-        
-        if filter_query:
-            papers = [
-                p for p in papers
-                if filter_query.lower() in p.get("title", "").lower()
-                or filter_query.lower() in p.get("abstract", "").lower()
-            ]
-            st.info(f"Filtered to {len(papers)} papers")
-    
-    # 显示论文列表
-    if papers:
-        for paper in papers:
-            render_paper_card(paper)
-    else:
-        st.info("No papers found.")
-    
-    # 底部导航栏
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🏠 Home", key="bottom_home", use_container_width=True):
-            st.session_state.page = "home"
-            st.rerun()
-    
-    with col2:
-        if st.button("⭐ Starred Papers", key="view_starred", use_container_width=True):
-            st.session_state.page = "starred"
-            st.rerun()
-
-
-def page_search():
-    """搜索页面"""
-    st.title("🔍 Search Papers")
-    
-    # 返回首页按钮
-    if st.button("🏠 Home", key="home_btn"):
-        st.session_state.page = "home"
-        st.rerun()
-    
-    # 搜索框
-    col1, col2 = st.columns([5, 1])
-    
-    with col1:
-        query = st.text_input(
-            "Search query",
-            value=st.session_state.get("search_query", ""),
-            placeholder="Enter keywords...",
-            key="search_input"
-        )
-    
-    with col2:
-        search_btn = st.button("Go", type="primary", use_container_width=True)
-    
-    if not query:
-        st.info("Enter a search query to find papers.")
-        return
-    
-    # 搜索选项
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        max_results = st.number_input("Max results", min_value=10, max_value=1000, value=100, step=10)
-    
-    with col2:
-        cat_filter = st.multiselect("Categories", [cat[0] for cat in ARXIV_CATEGORIES.values()])
-    
-    # 执行搜索
-    if query:
-        with st.spinner("Searching..."):
-            params = {
-                "query": query,
-                "max_results": max_results
-            }
-            
-            if cat_filter:
-                params["categories"] = ",".join(cat_filter)
-            
-            data = api_get("/search/", params=params)
-        
-        if not data:
-            st.error("Search failed. Please check if the backend is running.")
-            return
-        
-        results = data.get("results", [])
-        
-        st.success(f"Found {len(results)} papers")
-        
-        # 显示搜索结果
-        if results:
-            for paper in results:
-                render_paper_card(paper)
-        else:
-            st.info("No papers found for your query.")
-
-
-def page_starred():
-    """星标论文页面"""
-    st.title("⭐ Starred Papers")
-    
-    # 返回按钮
-    if st.button("🏠 Home", key="home_btn"):
-        st.session_state.page = "home"
-        st.rerun()
-    
-    if not st.session_state.starred_papers:
-        st.info("You haven't starred any papers yet.")
-        return
-    
-    st.success(f"You have {len(st.session_state.starred_papers)} starred papers")
-    
-    # 导出按钮
-    if st.button("📤 Export Starred Papers", type="primary"):
-        export_data = {
-            "starred_papers": list(st.session_state.starred_papers),
-            "export_date": datetime.now().isoformat()
-        }
-        st.download_button(
-            "💾 Download JSON",
-            data=json.dumps(export_data, indent=2),
-            file_name=f"starred_papers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
-    
-    st.markdown("---")
-    
-    # 显示星标论文
-    # 注意：这里需要从后端获取完整的论文信息
-    for paper_id in st.session_state.starred_papers:
-        # 尝试从 arXiv 获取
-        with st.spinner(f"Loading {paper_id}..."):
-            if "@" in paper_id:
-                source, pid = paper_id.split("@")
-                data = api_get(f"/papers/{source.lower()}/{pid}")
-            else:
-                data = api_get(f"/papers/arxiv/{paper_id}")
-        
-        if data:
-            render_paper_card(data)
 
 
 def main():
@@ -422,9 +169,6 @@ def main():
     # 自定义 CSS
     st.markdown("""
     <style>
-    .stButton>button {
-        width: 100%;
-    }
     div[data-testid="stExpander"] {
         border: 1px solid #ddd;
         border-radius: 5px;
@@ -434,79 +178,129 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # 侧边栏
+    # 侧边栏 - ArXiv 分类选择
     with st.sidebar:
-        st.image("https://via.placeholder.com/150x150.png?text=📚", width=150)
-        st.title("Cool Papers")
-        
-        st.markdown("---")
-        
-        # 页面导航
-        page = st.radio(
-            "Navigation",
-            ["🏠 Home", "📚 arXiv", "🔍 Search", "⭐ Starred"],
-            key="nav_radio"
-        )
-        
-        # 更新页面状态
-        page_map = {
-            "🏠 Home": "home",
-            "📚 arXiv": "arxiv",
-            "🔍 Search": "search",
-            "⭐ Starred": "starred"
-        }
-        st.session_state.page = page_map[page]
+        st.title("📚 Cool Papers")
+        st.caption("Simplified Interface")
         
         st.markdown("---")
         
         # ArXiv 分类选择
-        with st.expander("🔬 arXiv Categories", expanded=True):
-            st.caption("Select your interested categories")
-            selected_cats = []
-            
-            for cat_name, cat_info in ARXIV_CATEGORIES.items():
-                cat_id = cat_info[0]
-                is_selected = cat_id in st.session_state.selected_categories
-                
-                if st.checkbox(cat_name, value=is_selected, key=f"sidebar_cat_{cat_id}"):
-                    selected_cats.append(cat_id)
-            
-            st.session_state.selected_categories = selected_cats
-            
-            # 快速查看按钮
-            if st.session_state.selected_categories:
-                if st.button("📖 View Papers", key="sidebar_view_papers", type="primary", use_container_width=True):
-                    st.session_state.page = "arxiv"
-                    st.rerun()
+        st.subheader("🔬 arXiv Categories")
+        st.caption("Select your interested categories")
+        
+        selected_cats = []
+        for cat_name, cat_code in ARXIV_CATEGORIES.items():
+            is_selected = cat_code in st.session_state.selected_categories
+            if st.checkbox(cat_name, value=is_selected, key=f"cat_{cat_code}"):
+                selected_cats.append(cat_code)
+        
+        st.session_state.selected_categories = selected_cats
         
         st.markdown("---")
         
-        # 统计
-        st.metric("⭐ Starred", len(st.session_state.starred_papers))
-        st.metric("👀 Viewed", len(st.session_state.viewed_papers))
-        st.metric("📂 Categories", len(st.session_state.selected_categories))
+        # 显示选中的分类数量
+        st.metric("📂 Selected Categories", len(st.session_state.selected_categories))
         
         st.markdown("---")
         
         # 关于
         st.caption("**About**")
-        st.caption("Cool Papers - Immersive Paper Discovery")
-        st.caption("[GitHub](https://github.com/bojone/papers.cool)")
-        st.caption("[Blog](https://kexue.fm/archives/9920)")
+        st.caption("Cool Papers - Simplified Interface")
+        st.caption("Data loaded from local JSON files")
     
-    # 路由到不同页面
-    current_page = st.session_state.get("page", "home")
+    # 主页面
+    st.title("📚 Cool Papers - Paper Browser & Search")
+    st.subheader("Browse arXiv papers by category and date, or search within a specific date")
     
-    if current_page == "home":
-        page_home()
-    elif current_page == "arxiv":
-        page_arxiv()
-    elif current_page == "search":
-        page_search()
-    elif current_page == "starred":
-        page_starred()
+    st.markdown("---")
+    
+    # 显示当前选择的分类
+    if st.session_state.selected_categories:
+        st.info(f"🔬 **Current Categories:** {', '.join(st.session_state.selected_categories)}")
     else:
-        page_home()
+        st.warning("⚠️ Please select at least one category from the sidebar")
+    
+    # 日期选择 - 使用弹窗式日期选择器
+    st.header("📅 Select Date")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        selected_date = st.date_input(
+            "Select a date to view papers",
+            value=datetime.now(),
+            max_value=datetime.now(),
+            min_value=datetime.now() - timedelta(days=365),
+            key="date_picker"
+        )
+    
+    date_str = selected_date.strftime("%Y-%m-%d")
+    
+    st.markdown("---")
+    
+    # 搜索区域
+    st.header("🔍 Search Papers")
+    
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        search_query = st.text_input(
+            "Search Query",
+            placeholder="Enter keywords to search in titles and abstracts (or leave empty to show all papers)",
+            label_visibility="collapsed",
+            key="search_box"
+        )
+    
+    with col2:
+        search_button = st.button("🔍 Search", type="primary", use_container_width=True)
+    
+    st.markdown("---")
+    
+    # 加载并显示论文
+    if st.session_state.selected_categories:
+        with st.spinner(f"Loading papers for {date_str}..."):
+            # 加载论文
+            papers = load_papers_from_json(date_str)
+            
+            if not papers:
+                st.warning(f"📭 No papers found for date {date_str}")
+            else:
+                # 根据分类过滤
+                filtered_papers = filter_papers_by_categories(
+                    papers, 
+                    st.session_state.selected_categories
+                )
+                
+                if not filtered_papers:
+                    st.warning(f"📭 No papers found in selected categories for {date_str}")
+                else:
+                    # 如果有搜索查询，则进行搜索
+                    if search_query and search_query.strip():
+                        search_results = search_papers(search_query, filtered_papers)
+                        
+                        if not search_results:
+                            st.warning(f"📭 No results found for query: '{search_query}'")
+                        else:
+                            st.success(f"🔍 Found {len(search_results)} results for '{search_query}' in {date_str}")
+                            
+                            # 显示搜索结果
+                            for paper in search_results:
+                                render_paper_card(paper)
+                    else:
+                        # 没有搜索查询，显示所有论文
+                        st.success(f"✅ Found {len(filtered_papers)} papers for {date_str}")
+                        
+                        # 显示论文列表
+                        for paper in filtered_papers:
+                            render_paper_card(paper)
+    
+    # 页脚
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; color: #666;">
+        <p><strong>Cool Papers</strong> - Simplified Streamlit Interface</p>
+        <p>Data loaded from local JSON files</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
