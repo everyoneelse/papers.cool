@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://backend:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./streamlit_app.py:/app/streamlit_app.py
+      - ./.streamlit:/app/.streamlit
+    networks:
+      - coolpapers
+
+  backend:
+    build: ../backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./coolpapers.db
+      - DEBUG=True
+    volumes:
+      - ../backend:/app
+    networks:
+      - coolpapers
+
+networks:
+  coolpapers:
+    driver: bridge
