@@ -113,7 +113,7 @@ def format_papers_list(papers: List[Dict], starred_papers: set) -> str:
 
 def fetch_arxiv_papers(
     selected_categories: List[str],
-    selected_date: str,
+    selected_date: datetime,
     max_results: int,
     starred_papers: set
 ) -> Tuple[str, set]:
@@ -124,12 +124,15 @@ def fetch_arxiv_papers(
     # 转换分类名称为代码
     category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in selected_categories]
     
+    # 格式化日期
+    date_str = selected_date.strftime("%Y-%m-%d") if selected_date else datetime.now().strftime("%Y-%m-%d")
+    
     # 调用 API
     data = api_get(
         "/papers/arxiv/combined",
         params={
             "include": ",".join(category_codes),
-            "date": selected_date,
+            "date": date_str,
             "limit": max_results
         }
     )
@@ -194,48 +197,15 @@ def export_starred_papers(starred_papers: set) -> str:
     return json.dumps(export_data, indent=2)
 
 
-def create_home_tab():
-    """创建首页标签"""
-    with gr.Tab("🏠 Home"):
-        gr.Markdown("""
-        # 📚 Cool Papers
-        ## Immersive Paper Discovery（沉浸式刷论文！）
-        
-        Welcome to Cool Papers! Browse the latest research papers from arXiv, search by keywords, and manage your starred papers.
-        """)
-        
-        with gr.Row():
-            with gr.Column(scale=1):
-                gr.Markdown("### 📊 Statistics")
-                starred_count = gr.Textbox(
-                    label="⭐ Starred Papers",
-                    value="0",
-                    interactive=False
-                )
-                gr.Markdown("### 🔬 Quick Links")
-                gr.Markdown("""
-                - Switch to **📚 arXiv** tab to browse papers
-                - Switch to **🔍 Search** tab to search papers
-                - Switch to **⭐ Starred** tab to manage favorites
-                """)
-            
-            with gr.Column(scale=2):
-                gr.Markdown("### 🎯 Featured Categories")
-                gr.Markdown("""
-                - **cs.AI**: Artificial Intelligence
-                - **cs.CL**: Computation and Language (NLP)
-                - **cs.CV**: Computer Vision
-                - **cs.LG**: Machine Learning
-                - **cs.NE**: Neural and Evolutionary Computing
-                - **stat.ML**: Statistics - Machine Learning
-                """)
 
 
-def create_arxiv_tab(starred_papers_state):
-    """创建 arXiv 浏览标签"""
-    with gr.Tab("📚 arXiv"):
-        gr.Markdown("## 📚 arXiv Papers Browser")
+def create_papers_tab(starred_papers_state):
+    """创建论文浏览和搜索标签（合并arXiv和Search）"""
+    with gr.Tab("📚 Papers"):
+        gr.Markdown("## 📚 Browse and Search Papers")
         
+        # arXiv浏览部分
+        gr.Markdown("### 📚 Browse arXiv Papers")
         with gr.Row():
             selected_categories = gr.CheckboxGroup(
                 choices=list(ARXIV_CATEGORIES.keys()),
@@ -246,10 +216,10 @@ def create_arxiv_tab(starred_papers_state):
         
         with gr.Row():
             with gr.Column(scale=1):
-                selected_date = gr.Textbox(
-                    label="📅 Date (YYYY-MM-DD)",
-                    value=datetime.now().strftime("%Y-%m-%d"),
-                    placeholder="2024-01-15"
+                selected_date = gr.DateTime(
+                    label="📅 Select Date",
+                    value=datetime.now(),
+                    include_time=False
                 )
             
             with gr.Column(scale=1):
@@ -260,24 +230,31 @@ def create_arxiv_tab(starred_papers_state):
                     step=10,
                     label="📊 Max Results"
                 )
-            
-            with gr.Column(scale=1):
-                fetch_button = gr.Button("🔄 Fetch Papers", variant="primary", size="lg")
         
-        papers_output = gr.HTML(label="Papers", value="<p style='text-align: center;'>Click 'Fetch Papers' to load papers.</p>")
+        papers_output = gr.HTML(label="Papers", value="<p style='text-align: center;'>Papers will be loaded automatically based on your selection.</p>")
         
-        # 绑定事件
-        fetch_button.click(
+        # 自动加载论文（当分类或日期变化时）
+        selected_categories.change(
             fn=fetch_arxiv_papers,
             inputs=[selected_categories, selected_date, max_results, starred_papers_state],
             outputs=[papers_output, starred_papers_state]
         )
-
-
-def create_search_tab(starred_papers_state):
-    """创建搜索标签"""
-    with gr.Tab("🔍 Search"):
-        gr.Markdown("## 🔍 Search Papers")
+        
+        selected_date.change(
+            fn=fetch_arxiv_papers,
+            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
+            outputs=[papers_output, starred_papers_state]
+        )
+        
+        max_results.change(
+            fn=fetch_arxiv_papers,
+            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
+            outputs=[papers_output, starred_papers_state]
+        )
+        
+        # 搜索部分
+        gr.Markdown("---")
+        gr.Markdown("### 🔍 Search Papers")
         
         with gr.Row():
             search_query = gr.Textbox(
@@ -306,7 +283,7 @@ def create_search_tab(starred_papers_state):
         
         search_results = gr.HTML(label="Search Results", value="<p style='text-align: center;'>Enter a query and click 'Search'.</p>")
         
-        # 绑定事件
+        # 绑定搜索事件
         search_button.click(
             fn=search_papers,
             inputs=[search_query, search_max_results, search_category_filter, starred_papers_state],
@@ -314,49 +291,8 @@ def create_search_tab(starred_papers_state):
         )
 
 
-def create_starred_tab(starred_papers_state):
-    """创建星标管理标签"""
-    with gr.Tab("⭐ Starred"):
-        gr.Markdown("## ⭐ Starred Papers Management")
-        
-        with gr.Row():
-            starred_count_display = gr.Textbox(
-                label="Total Starred Papers",
-                value="0",
-                interactive=False
-            )
-            export_button = gr.Button("📤 Export Starred Papers", variant="primary")
-        
-        export_output = gr.Code(
-            label="Export Data (JSON)",
-            language="json",
-            value='{"message": "Click Export to see starred papers"}',
-            interactive=False
-        )
-        
-        gr.Markdown("""
-        ### 💡 Tips
-        - Star papers while browsing to add them to this list
-        - Export your starred papers as JSON for backup or sharing
-        - Import functionality coming soon!
-        """)
-        
-        # 更新星标计数
-        def update_starred_count(starred_papers):
-            return str(len(starred_papers))
-        
-        # 绑定事件
-        export_button.click(
-            fn=export_starred_papers,
-            inputs=[starred_papers_state],
-            outputs=[export_output]
-        )
-        
-        starred_papers_state.change(
-            fn=update_starred_count,
-            inputs=[starred_papers_state],
-            outputs=[starred_count_display]
-        )
+
+
 
 
 def create_app():
@@ -409,10 +345,7 @@ def create_app():
         starred_papers_state = gr.State(set())
         
         # 创建标签页
-        create_home_tab()
-        create_arxiv_tab(starred_papers_state)
-        create_search_tab(starred_papers_state)
-        create_starred_tab(starred_papers_state)
+        create_papers_tab(starred_papers_state)
         
         # 页脚
         gr.Markdown("""
