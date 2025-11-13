@@ -185,11 +185,8 @@ def search_and_display(
     selected_categories: List[str]
 ) -> Tuple[pd.DataFrame, str]:
     """
-    在当前日期的论文中搜索
+    在当前日期的论文中搜索（如果query为空，则显示所有论文）
     """
-    if not query:
-        return pd.DataFrame(), "⚠️ Please enter a search query"
-    
     if not selected_date:
         return pd.DataFrame(), "❌ Please select a date first"
     
@@ -205,16 +202,24 @@ def search_and_display(
     # 根据分类过滤
     filtered_papers = filter_papers_by_categories(papers, selected_categories)
     
-    # 使用tantivy搜索
-    search_results = search_papers_with_tantivy(query, filtered_papers)
+    # 如果有搜索查询，则进行搜索；否则显示所有论文
+    if query and query.strip():
+        search_results = search_papers_with_tantivy(query, filtered_papers)
+        
+        if not search_results:
+            return pd.DataFrame(), f"📭 No results found for query: '{query}'"
+        
+        # 格式化为DataFrame
+        df = format_papers_dataframe(search_results)
+        status_msg = f"🔍 Found {len(search_results)} results for '{query}' in {date_str}"
+    else:
+        # 没有搜索查询，显示所有论文
+        if not filtered_papers:
+            return pd.DataFrame(), f"📭 No papers found in selected categories for {date_str}"
+        
+        df = format_papers_dataframe(filtered_papers)
+        status_msg = f"✅ Showing {len(filtered_papers)} papers for {date_str}"
     
-    if not search_results:
-        return pd.DataFrame(), f"📭 No results found for query: '{query}'"
-    
-    # 格式化为DataFrame
-    df = format_papers_dataframe(search_results)
-    
-    status_msg = f"🔍 Found {len(search_results)} results for '{query}' in {date_str}"
     return df, status_msg
 
 
@@ -255,6 +260,14 @@ def create_app():
                 interactive=True
             )
         
+        # 搜索区域
+        gr.Markdown("### 🔍 Search Papers")
+        search_box = gr.Textbox(
+            label="Search Query",
+            placeholder="Enter keywords to search in titles and abstracts (or leave empty to show all papers)"
+        )
+        search_button = gr.Button("🔍 Search / Refresh", variant="primary")
+        
         # 状态信息
         status_text = gr.Textbox(
             label="Status",
@@ -262,7 +275,7 @@ def create_app():
             interactive=False
         )
         
-        # 论文显示区域 - 使用DataFrame
+        # 论文显示区域 - 使用DataFrame（统一的展示区域）
         papers_table = gr.DataFrame(
             label="📄 Papers",
             headers=["Title", "Authors", "Abstract", "Categories"],
@@ -270,51 +283,24 @@ def create_app():
             wrap=True
         )
         
-        # 分隔线
-        gr.Markdown("---")
-        gr.Markdown("### 🔍 Search Papers")
-        
-        # 搜索区域
-        with gr.Row():
-            search_box = gr.Textbox(
-                label="Search Query",
-                placeholder="Enter keywords to search in titles and abstracts...",
-                scale=4
-            )
-            search_button = gr.Button("🔍 Search", variant="primary", scale=1)
-        
-        # 搜索结果
-        search_status = gr.Textbox(
-            label="Search Status",
-            value="Enter a query and click Search",
-            interactive=False
-        )
-        
-        search_results_table = gr.DataFrame(
-            label="🔍 Search Results",
-            headers=["Title", "Authors", "Abstract", "Categories"],
-            datatype=["html", "str", "str", "str"],
-            wrap=True
-        )
-        
         # 事件绑定 - 当日期或分类变化时自动加载论文
         date_selector.change(
-            fn=load_and_display_papers,
-            inputs=[date_selector, category_selector],
+            fn=search_and_display,
+            inputs=[search_box, date_selector, category_selector],
             outputs=[papers_table, status_text]
         )
         
         category_selector.change(
-            fn=load_and_display_papers,
-            inputs=[date_selector, category_selector],
+            fn=search_and_display,
+            inputs=[search_box, date_selector, category_selector],
             outputs=[papers_table, status_text]
         )
         
-        # 搜索按钮点击事件
+        # 搜索按钮点击事件 - 使用同一个函数更新同一个表格
         search_button.click(
             fn=search_and_display,
             inputs=[search_box, date_selector, category_selector],
-            outputs=[search_results_table, search_status]
+            outputs=[papers_table, status_text]
         )
         
         # 页脚
