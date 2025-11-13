@@ -1,17 +1,18 @@
 """
-Cool Papers - Gradio Frontend
-沉浸式刷论文！Immersive Paper Discovery
+Cool Papers - Simplified Gradio Frontend
+简化的Gradio前端 - 单页面论文浏览和搜索
 """
 
 import gradio as gr
-from datetime import datetime, timedelta
-import httpx
+from datetime import datetime
+import pandas as pd
 from typing import List, Dict, Optional, Tuple
 import json
 import os
+from pathlib import Path
 
-# 后端 API 地址
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# 数据目录 - 假设论文数据按日期存储为JSON文件
+DATA_DIR = os.getenv("DATA_DIR", "./papers_data")
 
 # ArXiv 分类定义
 ARXIV_CATEGORIES = {
@@ -24,343 +25,295 @@ ARXIV_CATEGORIES = {
     "Statistics - Machine Learning (stat.ML)": "stat.ML",
 }
 
-# 全局状态（使用 gradio.State）
-starred_papers_global = set()
-viewed_papers_global = set()
+# Tantivy搜索索引路径
+SEARCH_INDEX_PATH = os.getenv("SEARCH_INDEX_PATH", "./search_index")
 
 
-def api_get(endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
-    """调用后端 API"""
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(f"{API_BASE_URL}{endpoint}", params=params)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def format_paper_card(paper: Dict, starred_papers: set) -> str:
-    """格式化单个论文卡片为 HTML"""
-    paper_id = paper.get("id", "")
-    is_starred = paper_id in starred_papers
-    star_icon = "⭐" if is_starred else "☆"
-    
-    # 论文标题
-    title = paper.get("title", "Untitled")
-    title_prefix = f"**#{paper_id.split('@')[0] if '@' in paper_id else paper_id}**" if paper_id else ""
-    
-    # 作者
-    authors = paper.get("authors", [])
-    if authors:
-        if len(authors) > 5:
-            author_str = ", ".join(authors[:5]) + " et al."
-        else:
-            author_str = ", ".join(authors)
-    else:
-        author_str = "Unknown"
-    
-    # 分类和发布日期
-    categories = paper.get("categories", [])
-    category_str = ", ".join(categories[:3]) if categories else "N/A"
-    pub_date = paper.get("published_date", "N/A")
-    
-    # 摘要
-    abstract = paper.get("abstract", "No abstract available.")
-    if len(abstract) > 300:
-        abstract = abstract[:300] + "..."
-    
-    # 链接
-    pdf_url = paper.get("pdf_url", "")
-    paper_url = paper.get("url", "")
-    
-    # 构建 HTML 卡片
-    html = f"""
-    <div style="border: 1px solid #ddd; border-radius: 10px; padding: 20px; margin: 10px 0; background-color: #f9f9f9;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h3 style="margin: 0; color: #32a852;">{star_icon} {title_prefix} {title}</h3>
-        </div>
-        <p style="color: #666; margin: 10px 0;"><strong>👥 Authors:</strong> {author_str}</p>
-        <div style="display: flex; gap: 20px; margin: 10px 0;">
-            <p style="color: #666; margin: 0;"><strong>🏷️ Categories:</strong> {category_str}</p>
-            <p style="color: #666; margin: 0;"><strong>📅 Published:</strong> {pub_date}</p>
-        </div>
-        <details style="margin: 15px 0;">
-            <summary style="cursor: pointer; color: #32a852; font-weight: bold;">📄 Abstract</summary>
-            <p style="margin-top: 10px; line-height: 1.6;">{abstract}</p>
-        </details>
-        <div style="display: flex; gap: 10px; margin-top: 15px;">
-            {f'<a href="{pdf_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #32a852; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">📄 PDF</button></a>' if pdf_url else ''}
-            {f'<a href="{paper_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #4CAF50; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">🔗 Link</button></a>' if paper_url else ''}
-            <button onclick="alert('Kimi summary coming soon!')" style="background-color: #2196F3; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">🤖 Kimi</button>
-        </div>
-    </div>
+def load_papers_from_json(date_str: str) -> List[Dict]:
     """
-    return html
-
-
-def format_papers_list(papers: List[Dict], starred_papers: set) -> str:
-    """格式化论文列表"""
-    if not papers:
-        return "<p style='text-align: center; color: #666;'>📭 No papers found.</p>"
+    从JSON文件加载指定日期的论文数据
+    假设文件命名格式为: papers_YYYY-MM-DD.json
+    """
+    data_path = Path(DATA_DIR)
+    json_file = data_path / f"papers_{date_str}.json"
     
-    html = f"<div style='margin: 20px 0;'><h3 style='color: #32a852;'>Found {len(papers)} papers</h3></div>"
-    for paper in papers:
-        html += format_paper_card(paper, starred_papers)
+    if not json_file.exists():
+        return []
     
-    return html
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            papers = json.load(f)
+            return papers if isinstance(papers, list) else []
+    except Exception as e:
+        print(f"Error loading papers from {json_file}: {e}")
+        return []
 
 
-def fetch_arxiv_papers(
-    selected_categories: List[str],
-    selected_date: float,
-    max_results: int,
-    starred_papers: set
-) -> Tuple[str, set]:
-    """获取 arXiv 论文"""
-    if not selected_categories:
-        return "<p style='color: orange;'>⚠️ Please select at least one category.</p>", starred_papers
+def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> List[Dict]:
+    """根据选择的分类过滤论文"""
+    if not categories:
+        return papers
     
     # 转换分类名称为代码
-    category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in selected_categories]
+    category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in categories]
     
-    # 格式化日期 - gr.DateTime 返回的是 float 时间戳
-    if selected_date:
-        date_obj = datetime.fromtimestamp(selected_date)
-        date_str = date_obj.strftime("%Y-%m-%d")
-    else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-    
-    # 调用 API
-    data = api_get(
-        "/papers/arxiv/combined",
-        params={
-            "include": ",".join(category_codes),
-            "date": date_str,
-            "limit": max_results
-        }
-    )
-    
-    if not data or "error" in data:
-        error_msg = data.get("error", "Unknown error") if data else "API connection failed"
-        return f"<p style='color: red;'>❌ Error: {error_msg}</p>", starred_papers
-    
-    papers = data.get("papers", [])
-    return format_papers_list(papers, starred_papers), starred_papers
-
-
-def search_papers(
-    query: str,
-    max_results: int,
-    category_filter: List[str],
-    starred_papers: set
-) -> Tuple[str, set]:
-    """搜索论文"""
-    if not query:
-        return "<p style='color: orange;'>⚠️ Please enter a search query.</p>", starred_papers
-    
-    params = {
-        "query": query,
-        "max_results": max_results
-    }
-    
-    if category_filter:
-        category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in category_filter]
-        params["categories"] = ",".join(category_codes)
-    
-    data = api_get("/search/", params=params)
-    
-    if not data or "error" in data:
-        error_msg = data.get("error", "Unknown error") if data else "API connection failed"
-        return f"<p style='color: red;'>❌ Error: {error_msg}</p>", starred_papers
-    
-    results = data.get("results", [])
-    return format_papers_list(results, starred_papers), starred_papers
-
-
-def toggle_star_paper(paper_id: str, starred_papers: set) -> Tuple[str, set]:
-    """切换论文星标状态"""
-    if paper_id in starred_papers:
-        starred_papers.discard(paper_id)
-        return f"✅ Removed {paper_id} from starred papers", starred_papers
-    else:
-        starred_papers.add(paper_id)
-        return f"⭐ Added {paper_id} to starred papers", starred_papers
-
-
-def export_starred_papers(starred_papers: set) -> str:
-    """导出星标论文"""
-    if not starred_papers:
-        return json.dumps({"message": "No starred papers to export"}, indent=2)
-    
-    export_data = {
-        "starred_papers": list(starred_papers),
-        "export_date": datetime.now().isoformat(),
-        "count": len(starred_papers)
-    }
-    return json.dumps(export_data, indent=2)
-
-
-
-
-def create_papers_tab(starred_papers_state):
-    """创建论文浏览和搜索标签（合并arXiv和Search）"""
-    with gr.Tab("📚 Papers"):
-        gr.Markdown("## 📚 Browse and Search Papers")
+    filtered = []
+    for paper in papers:
+        paper_categories = paper.get("categories", [])
+        if isinstance(paper_categories, str):
+            paper_categories = [paper_categories]
         
-        # arXiv浏览部分
-        gr.Markdown("### 📚 Browse arXiv Papers")
+        # 检查论文是否属于任一选中的分类
+        if any(cat in paper_categories for cat in category_codes):
+            filtered.append(paper)
+    
+    return filtered
+
+
+def format_papers_dataframe(papers: List[Dict]) -> pd.DataFrame:
+    """
+    将论文列表格式化为pandas DataFrame
+    包含：标题、作者、摘要、分类
+    """
+    if not papers:
+        return pd.DataFrame(columns=["Title", "Authors", "Abstract", "Categories", "URL"])
+    
+    data = []
+    for paper in papers:
+        title = paper.get("title", "Untitled")
+        url = paper.get("url", "") or paper.get("pdf_url", "")
+        
+        # 创建带链接的标题（使用HTML）
+        if url:
+            title_with_link = f'<a href="{url}" target="_blank">{title}</a>'
+        else:
+            title_with_link = title
+        
+        # 作者列表
+        authors = paper.get("authors", [])
+        if isinstance(authors, list):
+            if len(authors) > 5:
+                authors_str = ", ".join(authors[:5]) + " et al."
+            else:
+                authors_str = ", ".join(authors)
+        else:
+            authors_str = str(authors)
+        
+        # 摘要
+        abstract = paper.get("abstract", "No abstract available.")
+        if len(abstract) > 200:
+            abstract = abstract[:200] + "..."
+        
+        # 分类
+        categories = paper.get("categories", [])
+        if isinstance(categories, list):
+            categories_str = ", ".join(categories)
+        else:
+            categories_str = str(categories)
+        
+        data.append({
+            "Title": title_with_link,
+            "Authors": authors_str,
+            "Abstract": abstract,
+            "Categories": categories_str,
+            "URL": url
+        })
+    
+    df = pd.DataFrame(data)
+    return df[["Title", "Authors", "Abstract", "Categories"]]  # 不显示URL列，已经在标题中
+
+
+def search_papers_with_tantivy(query: str, papers: List[Dict]) -> List[Dict]:
+    """
+    使用Tantivy搜索论文（搜索标题和摘要）
+    注：这里是简化实现，实际需要安装tantivy-py并构建索引
+    
+    如果没有安装tantivy，这里使用简单的字符串匹配作为fallback
+    """
+    if not query:
+        return papers
+    
+    query_lower = query.lower()
+    results = []
+    
+    for paper in papers:
+        title = paper.get("title", "").lower()
+        abstract = paper.get("abstract", "").lower()
+        
+        # 简单的字符串匹配（作为tantivy的替代）
+        if query_lower in title or query_lower in abstract:
+            results.append(paper)
+    
+    return results
+
+
+def load_and_display_papers(
+    selected_date: str,
+    selected_categories: List[str]
+) -> Tuple[pd.DataFrame, str]:
+    """
+    加载并显示指定日期和分类的论文
+    """
+    if not selected_date:
+        return pd.DataFrame(), "❌ Please select a date"
+    
+    # 加载论文
+    papers = load_papers_from_json(selected_date)
+    
+    if not papers:
+        return pd.DataFrame(), f"📭 No papers found for date {selected_date}"
+    
+    # 根据分类过滤
+    filtered_papers = filter_papers_by_categories(papers, selected_categories)
+    
+    if not filtered_papers:
+        return pd.DataFrame(), f"📭 No papers found in selected categories for {selected_date}"
+    
+    # 格式化为DataFrame
+    df = format_papers_dataframe(filtered_papers)
+    
+    status_msg = f"✅ Found {len(filtered_papers)} papers for {selected_date}"
+    return df, status_msg
+
+
+def search_and_display(
+    query: str,
+    selected_date: str,
+    selected_categories: List[str]
+) -> Tuple[pd.DataFrame, str]:
+    """
+    在当前日期的论文中搜索
+    """
+    if not query:
+        return pd.DataFrame(), "⚠️ Please enter a search query"
+    
+    if not selected_date:
+        return pd.DataFrame(), "❌ Please select a date first"
+    
+    # 加载当前日期的论文
+    papers = load_papers_from_json(selected_date)
+    
+    if not papers:
+        return pd.DataFrame(), f"📭 No papers found for date {selected_date}"
+    
+    # 根据分类过滤
+    filtered_papers = filter_papers_by_categories(papers, selected_categories)
+    
+    # 使用tantivy搜索
+    search_results = search_papers_with_tantivy(query, filtered_papers)
+    
+    if not search_results:
+        return pd.DataFrame(), f"📭 No results found for query: '{query}'"
+    
+    # 格式化为DataFrame
+    df = format_papers_dataframe(search_results)
+    
+    status_msg = f"🔍 Found {len(search_results)} results for '{query}' in {selected_date}"
+    return df, status_msg
+
+
+def create_app():
+    """创建简化的Gradio应用"""
+    
+    with gr.Blocks(
+        title="Cool Papers - Simple Interface",
+        theme=gr.themes.Soft(primary_hue="green")
+    ) as app:
+        
+        # 标题
+        gr.Markdown("""
+        # 📚 Cool Papers - Paper Browser & Search
+        ### Browse arXiv papers by category and date, or search within a specific date
+        """)
+        
+        # 日期选择
         with gr.Row():
-            selected_categories = gr.CheckboxGroup(
+            date_selector = gr.Textbox(
+                label="📅 Date (YYYY-MM-DD)",
+                value=datetime.now().strftime("%Y-%m-%d"),
+                placeholder="2025-11-13"
+            )
+        
+        # 分类选择 - 使用Dropdown支持多选
+        with gr.Row():
+            category_selector = gr.Dropdown(
                 choices=list(ARXIV_CATEGORIES.keys()),
-                value=["Artificial Intelligence (cs.AI)", "Computation and Language (cs.CL)", "Machine Learning (cs.LG)"],
-                label="🔬 Select Categories",
+                value=["Artificial Intelligence (cs.AI)", "Machine Learning (cs.LG)"],
+                label="🔬 Select Categories (Multi-select)",
+                multiselect=True,
                 interactive=True
             )
         
-        with gr.Row():
-            with gr.Column(scale=1):
-                selected_date = gr.DateTime(
-                    label="📅 Select Date",
-                    value=datetime.now(),
-                    include_time=False
-                )
-            
-            with gr.Column(scale=1):
-                max_results = gr.Slider(
-                    minimum=10,
-                    maximum=500,
-                    value=100,
-                    step=10,
-                    label="📊 Max Results"
-                )
-        
-        papers_output = gr.HTML(label="Papers", value="<p style='text-align: center;'>Papers will be loaded automatically based on your selection.</p>")
-        
-        # 自动加载论文（当分类或日期变化时）
-        selected_categories.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
+        # 状态信息
+        status_text = gr.Textbox(
+            label="Status",
+            value="Select a date and categories to view papers",
+            interactive=False
         )
         
-        selected_date.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
+        # 论文显示区域 - 使用DataFrame
+        papers_table = gr.DataFrame(
+            label="📄 Papers",
+            headers=["Title", "Authors", "Abstract", "Categories"],
+            datatype=["html", "str", "str", "str"],
+            wrap=True,
+            height=400
         )
         
-        max_results.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
-        )
-        
-        # 搜索部分
+        # 分隔线
         gr.Markdown("---")
         gr.Markdown("### 🔍 Search Papers")
         
+        # 搜索区域
         with gr.Row():
-            search_query = gr.Textbox(
+            search_box = gr.Textbox(
                 label="Search Query",
-                placeholder="Enter keywords (e.g., transformer attention mechanism)",
+                placeholder="Enter keywords to search in titles and abstracts...",
                 scale=4
             )
             search_button = gr.Button("🔍 Search", variant="primary", scale=1)
         
-        with gr.Row():
-            with gr.Column(scale=1):
-                search_max_results = gr.Slider(
-                    minimum=10,
-                    maximum=1000,
-                    value=100,
-                    step=10,
-                    label="📊 Max Results"
-                )
-            
-            with gr.Column(scale=2):
-                search_category_filter = gr.CheckboxGroup(
-                    choices=list(ARXIV_CATEGORIES.keys()),
-                    label="🏷️ Filter by Categories (optional)",
-                    interactive=True
-                )
-        
-        search_results = gr.HTML(label="Search Results", value="<p style='text-align: center;'>Enter a query and click 'Search'.</p>")
-        
-        # 绑定搜索事件
-        search_button.click(
-            fn=search_papers,
-            inputs=[search_query, search_max_results, search_category_filter, starred_papers_state],
-            outputs=[search_results, starred_papers_state]
+        # 搜索结果
+        search_status = gr.Textbox(
+            label="Search Status",
+            value="Enter a query and click Search",
+            interactive=False
         )
-
-
-
-
-
-
-def create_app():
-    """创建 Gradio 应用"""
-    
-    # 自定义 CSS
-    custom_css = """
-    .gradio-container {
-        font-family: 'Arial', sans-serif;
-    }
-    
-    h1, h2, h3 {
-        color: #32a852;
-    }
-    
-    .gr-button-primary {
-        background-color: #32a852 !important;
-        border-color: #32a852 !important;
-    }
-    
-    .gr-button-primary:hover {
-        background-color: #2d9647 !important;
-    }
-    
-    details {
-        cursor: pointer;
-    }
-    
-    details summary {
-        font-weight: bold;
-        color: #32a852;
-    }
-    """
-    
-    with gr.Blocks(
-        title="Cool Papers - Gradio Frontend",
-        css=custom_css,
-        theme=gr.themes.Soft(primary_hue="green")
-    ) as app:
         
-        # 应用标题
-        gr.Markdown("""
-        <div style="text-align: center; padding: 20px; background: linear-gradient(90deg, #32a852 0%, #2d9647 100%); border-radius: 10px; margin-bottom: 20px;">
-            <h1 style="color: white; margin: 0;">📚 Cool Papers</h1>
-            <p style="color: white; margin: 10px 0 0 0;">Immersive Paper Discovery | 沉浸式刷论文</p>
-        </div>
-        """)
+        search_results_table = gr.DataFrame(
+            label="🔍 Search Results",
+            headers=["Title", "Authors", "Abstract", "Categories"],
+            datatype=["html", "str", "str", "str"],
+            wrap=True,
+            height=400
+        )
         
-        # 全局状态：星标论文集合
-        starred_papers_state = gr.State(set())
+        # 事件绑定 - 当日期或分类变化时自动加载论文
+        date_selector.change(
+            fn=load_and_display_papers,
+            inputs=[date_selector, category_selector],
+            outputs=[papers_table, status_text]
+        )
         
-        # 创建标签页
-        create_papers_tab(starred_papers_state)
+        category_selector.change(
+            fn=load_and_display_papers,
+            inputs=[date_selector, category_selector],
+            outputs=[papers_table, status_text]
+        )
+        
+        # 搜索按钮点击事件
+        search_button.click(
+            fn=search_and_display,
+            inputs=[search_box, date_selector, category_selector],
+            outputs=[search_results_table, search_status]
+        )
         
         # 页脚
         gr.Markdown("""
         ---
-        <div style="text-align: center; color: #666; padding: 20px;">
-            <p><strong>Cool Papers</strong> - Made with ❤️ using Gradio</p>
-            <p>
-                <a href="https://github.com/bojone/papers.cool" target="_blank">GitHub</a> | 
-                <a href="https://kexue.fm/archives/9920" target="_blank">Blog</a> | 
-                <a href="http://localhost:8000/docs" target="_blank">API Docs</a>
-            </p>
+        <div style="text-align: center; color: #666;">
+            <p><strong>Cool Papers</strong> - Simplified Interface</p>
+            <p>Data loaded from local JSON files</p>
         </div>
         """)
     
@@ -369,6 +322,9 @@ def create_app():
 
 def main():
     """主函数"""
+    # 确保数据目录存在
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
     app = create_app()
     
     # 启动应用
