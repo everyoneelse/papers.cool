@@ -1,0 +1,82 @@
+[
+  {
+    "id": "2311.12345",
+    "title": "Attention Is All You Need: A Comprehensive Survey",
+    "authors": ["John Smith", "Jane Doe", "Bob Johnson"],
+    "abstract": "This paper presents a comprehensive survey of attention mechanisms in neural networks. We explore various attention architectures including self-attention, cross-attention, and multi-head attention. Our analysis covers applications in natural language processing, computer vision, and multimodal learning.",
+    "categories": ["cs.AI", "cs.LG", "cs.CL"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12345",
+    "pdf_url": "https://arxiv.org/pdf/2311.12345.pdf"
+  },
+  {
+    "id": "2311.12346",
+    "title": "Large Language Models for Code Generation: A Benchmark Study",
+    "authors": ["Alice Chen", "David Wang", "Emma Liu", "Frank Zhang", "Grace Kim", "Henry Lee"],
+    "abstract": "We present a comprehensive benchmark study of large language models for code generation tasks. Our evaluation covers multiple programming languages including Python, Java, and JavaScript. We analyze model performance on various metrics including correctness, efficiency, and readability. The results show significant improvements over previous state-of-the-art methods.",
+    "categories": ["cs.AI", "cs.SE", "cs.CL"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12346",
+    "pdf_url": "https://arxiv.org/pdf/2311.12346.pdf"
+  },
+  {
+    "id": "2311.12347",
+    "title": "Vision Transformers for Object Detection: Scaling to High Resolution",
+    "authors": ["Michael Brown", "Sarah Davis"],
+    "abstract": "We introduce a novel approach for scaling vision transformers to high-resolution object detection tasks. Our method efficiently processes large images while maintaining computational efficiency through hierarchical attention mechanisms. Experiments on COCO and LVIS datasets demonstrate state-of-the-art performance.",
+    "categories": ["cs.CV", "cs.LG"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12347",
+    "pdf_url": "https://arxiv.org/pdf/2311.12347.pdf"
+  },
+  {
+    "id": "2311.12348",
+    "title": "Neural Architecture Search with Reinforcement Learning: A Survey",
+    "authors": ["Tom Anderson", "Lisa Martinez"],
+    "abstract": "This survey provides a comprehensive overview of neural architecture search methods based on reinforcement learning. We categorize existing approaches, discuss their strengths and limitations, and identify promising future research directions. Special attention is given to efficiency considerations and transfer learning capabilities.",
+    "categories": ["cs.LG", "cs.NE", "cs.AI"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12348",
+    "pdf_url": "https://arxiv.org/pdf/2311.12348.pdf"
+  },
+  {
+    "id": "2311.12349",
+    "title": "Efficient Training of Large-Scale Language Models with Mixed Precision",
+    "authors": ["Chris Wilson", "Patricia Taylor", "Robert Moore"],
+    "abstract": "We propose novel techniques for efficient training of large-scale language models using mixed precision arithmetic. Our approach reduces memory consumption by 40% while maintaining model quality. We provide theoretical analysis and extensive experimental validation on models ranging from 1B to 100B parameters.",
+    "categories": ["cs.LG", "cs.CL", "cs.AI"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12349",
+    "pdf_url": "https://arxiv.org/pdf/2311.12349.pdf"
+  },
+  {
+    "id": "2311.12350",
+    "title": "Computational Complexity of Graph Neural Networks",
+    "authors": ["Daniel White", "Olivia Green"],
+    "abstract": "We analyze the computational complexity of various graph neural network architectures. Our study covers message passing networks, graph attention networks, and graph transformers. We establish tight bounds on time and space complexity for common graph learning tasks and provide practical recommendations for architecture selection.",
+    "categories": ["cs.CC", "cs.LG", "cs.DS"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12350",
+    "pdf_url": "https://arxiv.org/pdf/2311.12350.pdf"
+  },
+  {
+    "id": "2311.12351",
+    "title": "Statistical Learning Theory for Deep Neural Networks",
+    "authors": ["Jessica Harris", "Kevin Clark", "Laura Adams"],
+    "abstract": "This paper develops a comprehensive statistical learning theory framework for deep neural networks. We derive generalization bounds that account for network depth, width, and training dynamics. Our theoretical results provide insights into the impressive empirical performance of deep learning and suggest new regularization strategies.",
+    "categories": ["stat.ML", "cs.LG", "math.ST"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12351",
+    "pdf_url": "https://arxiv.org/pdf/2311.12351.pdf"
+  },
+  {
+    "id": "2311.12352",
+    "title": "Multimodal Learning: Bridging Vision and Language",
+    "authors": ["Mark Thompson", "Nancy Rodriguez"],
+    "abstract": "We present a novel framework for multimodal learning that effectively bridges vision and language modalities. Our approach uses cross-modal attention mechanisms to align visual and textual representations. Extensive experiments on image captioning, visual question answering, and image-text retrieval demonstrate significant improvements over existing methods.",
+    "categories": ["cs.CV", "cs.CL", "cs.AI"],
+    "published_date": "2025-11-13",
+    "url": "https://arxiv.org/abs/2311.12352",
+    "pdf_url": "https://arxiv.org/pdf/2311.12352.pdf"
+  }
+]
