@@ -256,8 +256,7 @@ def create_app():
             label="📄 Papers",
             headers=["Title", "Authors", "Abstract", "Categories"],
             datatype=["html", "str", "str", "str"],
-            wrap=True,
-            height=400
+            wrap=True
         )
         
         # 分隔线
@@ -284,8 +283,7 @@ def create_app():
             label="🔍 Search Results",
             headers=["Title", "Authors", "Abstract", "Categories"],
             datatype=["html", "str", "str", "str"],
-            wrap=True,
-            height=400
+            wrap=True
         )
         
         # 事件绑定 - 当日期或分类变化时自动加载论文
