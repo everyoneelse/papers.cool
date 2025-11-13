@@ -203,73 +203,77 @@ def export_starred_papers(starred_papers: set) -> str:
 
 
 
-def create_papers_tab(starred_papers_state):
-    """创建论文浏览和搜索标签（合并arXiv和Search）"""
-    with gr.Tab("📚 Papers"):
-        gr.Markdown("## 📚 Browse and Search Papers")
-        
-        # arXiv浏览部分
-        gr.Markdown("### 📚 Browse arXiv Papers")
-        with gr.Row():
-            selected_categories = gr.CheckboxGroup(
-                choices=list(ARXIV_CATEGORIES.keys()),
-                value=["Artificial Intelligence (cs.AI)", "Computation and Language (cs.CL)", "Machine Learning (cs.LG)"],
-                label="🔬 Select Categories",
-                interactive=True
-            )
-        
-        with gr.Row():
-            with gr.Column(scale=1):
-                selected_date = gr.DateTime(
-                    label="📅 Select Date",
-                    value=datetime.now(),
-                    include_time=False
-                )
+def create_main_interface(starred_papers_state):
+    """创建统一的主界面（无侧边栏，无标签页）"""
+    
+    # arXiv 分类选择 - 放在最上方
+    gr.Markdown("## 🔬 arXiv Categories")
+    selected_categories = gr.CheckboxGroup(
+        choices=list(ARXIV_CATEGORIES.keys()),
+        value=["Artificial Intelligence (cs.AI)", "Computation and Language (cs.CL)", "Machine Learning (cs.LG)"],
+        label="Select Categories to Browse",
+        interactive=True
+    )
+    
+    # 浏览和搜索选项卡
+    with gr.Tabs():
+        # arXiv 浏览标签
+        with gr.Tab("📅 Browse by Date"):
+            gr.Markdown("### Browse arXiv Papers by Date and Categories")
             
-            with gr.Column(scale=1):
-                max_results = gr.Slider(
-                    minimum=10,
-                    maximum=500,
-                    value=100,
-                    step=10,
-                    label="📊 Max Results"
-                )
-        
-        papers_output = gr.HTML(label="Papers", value="<p style='text-align: center;'>Papers will be loaded automatically based on your selection.</p>")
-        
-        # 自动加载论文（当分类或日期变化时）
-        selected_categories.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
-        )
-        
-        selected_date.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
-        )
-        
-        max_results.change(
-            fn=fetch_arxiv_papers,
-            inputs=[selected_categories, selected_date, max_results, starred_papers_state],
-            outputs=[papers_output, starred_papers_state]
-        )
-        
-        # 搜索部分
-        gr.Markdown("---")
-        gr.Markdown("### 🔍 Search Papers")
-        
-        with gr.Row():
-            search_query = gr.Textbox(
-                label="Search Query",
-                placeholder="Enter keywords (e.g., transformer attention mechanism)",
-                scale=4
+            with gr.Row():
+                with gr.Column(scale=1):
+                    selected_date = gr.DateTime(
+                        label="📅 Select Date",
+                        value=datetime.now(),
+                        include_time=False
+                    )
+                
+                with gr.Column(scale=1):
+                    max_results = gr.Slider(
+                        minimum=10,
+                        maximum=500,
+                        value=100,
+                        step=10,
+                        label="📊 Max Results"
+                    )
+            
+            browse_button = gr.Button("📚 View Papers", variant="primary", size="lg")
+            papers_output = gr.HTML(label="Papers", value="<p style='text-align: center;'>Select categories above and click 'View Papers' to load.</p>")
+            
+            # 绑定浏览事件
+            browse_button.click(
+                fn=fetch_arxiv_papers,
+                inputs=[selected_categories, selected_date, max_results, starred_papers_state],
+                outputs=[papers_output, starred_papers_state]
             )
-            search_button = gr.Button("🔍 Search", variant="primary", scale=1)
+            
+            # 也支持自动加载
+            selected_categories.change(
+                fn=fetch_arxiv_papers,
+                inputs=[selected_categories, selected_date, max_results, starred_papers_state],
+                outputs=[papers_output, starred_papers_state]
+            )
+            
+            selected_date.change(
+                fn=fetch_arxiv_papers,
+                inputs=[selected_categories, selected_date, max_results, starred_papers_state],
+                outputs=[papers_output, starred_papers_state]
+            )
         
-        with gr.Row():
-            with gr.Column(scale=1):
+        # 搜索标签
+        with gr.Tab("🔍 Search Papers"):
+            gr.Markdown("### Search Papers by Keywords")
+            
+            with gr.Row():
+                search_query = gr.Textbox(
+                    label="Search Query",
+                    placeholder="e.g., transformer attention mechanism",
+                    scale=4
+                )
+                search_button = gr.Button("🔍 Search", variant="primary", scale=1)
+            
+            with gr.Row():
                 search_max_results = gr.Slider(
                     minimum=10,
                     maximum=1000,
@@ -278,21 +282,16 @@ def create_papers_tab(starred_papers_state):
                     label="📊 Max Results"
                 )
             
-            with gr.Column(scale=2):
-                search_category_filter = gr.CheckboxGroup(
-                    choices=list(ARXIV_CATEGORIES.keys()),
-                    label="🏷️ Filter by Categories (optional)",
-                    interactive=True
-                )
-        
-        search_results = gr.HTML(label="Search Results", value="<p style='text-align: center;'>Enter a query and click 'Search'.</p>")
-        
-        # 绑定搜索事件
-        search_button.click(
-            fn=search_papers,
-            inputs=[search_query, search_max_results, search_category_filter, starred_papers_state],
-            outputs=[search_results, starred_papers_state]
-        )
+            gr.Markdown("**Tip:** Search will use the categories selected above. Deselect all to search across all categories.")
+            
+            search_results = gr.HTML(label="Search Results", value="<p style='text-align: center;'>Enter a query and click 'Search'.</p>")
+            
+            # 绑定搜索事件
+            search_button.click(
+                fn=search_papers,
+                inputs=[search_query, search_max_results, selected_categories, starred_papers_state],
+                outputs=[search_results, starred_papers_state]
+            )
 
 
 
