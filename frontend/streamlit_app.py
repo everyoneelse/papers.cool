@@ -146,60 +146,33 @@ def render_paper_card(paper: Dict, show_pdf: bool = False, show_kimi: bool = Fal
 
 
 def page_home():
-    """首页 - 分类选择"""
+    """首页 - 简洁的日期和搜索界面"""
     st.title("📚 Cool Papers")
     st.subheader("Immersive Paper Discovery（沉浸式刷论文！）")
     
     st.markdown("---")
     
-    # ArXiv 分类
-    st.header("🔬 arXiv Categories")
-    st.caption("Select your interested categories")
+    # 日期选择区域
+    st.header("📅 Browse by Date")
     
-    cols = st.columns(3)
-    selected_cats = []
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        selected_date = st.date_input(
+            "Select a date to view papers",
+            value=datetime.now(),
+            max_value=datetime.now(),
+            key="home_date_picker"
+        )
     
-    for idx, (cat_name, cat_info) in enumerate(ARXIV_CATEGORIES.items()):
-        with cols[idx % 3]:
-            cat_id = cat_info[0]
-            is_selected = cat_id in st.session_state.selected_categories
-            
-            if st.checkbox(cat_name, value=is_selected, key=f"cat_{cat_id}"):
-                selected_cats.append(cat_id)
-    
-    st.session_state.selected_categories = selected_cats
-    
-    # 查看选中分类的论文
-    if st.session_state.selected_categories:
-        if st.button("📖 View Selected Categories", type="primary", use_container_width=True):
-            st.session_state.page = "arxiv"
-            st.rerun()
-        
-        st.markdown("")  # 添加一些间距
-        
-        # 日期选择器和Feed链接
-        col1, col2 = st.columns(2)
-        with col1:
-            # 日历选择器
-            st.caption("📅 View Papers by Date")
-            selected_date = st.date_input(
-                "Select date",
-                value=datetime.now(),
-                max_value=datetime.now(),
-                key="home_date_picker",
-                label_visibility="collapsed"
-            )
-            # 查看指定日期的论文按钮
-            if st.button("📅 View Papers on Selected Date", key="view_date_papers", use_container_width=True):
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # 添加间距对齐按钮
+        if st.button("📖 View Papers", key="view_date_papers", type="primary", use_container_width=True):
+            if st.session_state.selected_categories:
                 st.session_state.arxiv_date = selected_date
                 st.session_state.page = "arxiv"
                 st.rerun()
-        
-        with col2:
-            # Feed 订阅链接
-            st.caption("📡 RSS Feed")
-            feed_url = f"{API_BASE_URL}/feeds/arxiv/{','.join(st.session_state.selected_categories)}"
-            st.link_button("📡 Subscribe to RSS", feed_url, use_container_width=True)
+            else:
+                st.warning("Please select at least one category from the sidebar first.")
     
     st.markdown("---")
     
@@ -320,22 +293,17 @@ def page_arxiv():
     
     # 底部导航栏
     st.markdown("---")
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🏠 Home", key="bottom_home"):
+        if st.button("🏠 Home", key="bottom_home", use_container_width=True):
             st.session_state.page = "home"
             st.rerun()
     
     with col2:
-        if st.button("⭐ Starred Papers", key="view_starred"):
+        if st.button("⭐ Starred Papers", key="view_starred", use_container_width=True):
             st.session_state.page = "starred"
             st.rerun()
-    
-    with col3:
-        # Feed 订阅
-        feed_url = f"{API_BASE_URL}/feeds/arxiv/{','.join(st.session_state.selected_categories)}"
-        st.link_button("📡 RSS Feed", feed_url)
 
 
 def page_search():
@@ -491,9 +459,32 @@ def main():
         
         st.markdown("---")
         
+        # ArXiv 分类选择
+        with st.expander("🔬 arXiv Categories", expanded=True):
+            st.caption("Select your interested categories")
+            selected_cats = []
+            
+            for cat_name, cat_info in ARXIV_CATEGORIES.items():
+                cat_id = cat_info[0]
+                is_selected = cat_id in st.session_state.selected_categories
+                
+                if st.checkbox(cat_name, value=is_selected, key=f"sidebar_cat_{cat_id}"):
+                    selected_cats.append(cat_id)
+            
+            st.session_state.selected_categories = selected_cats
+            
+            # 快速查看按钮
+            if st.session_state.selected_categories:
+                if st.button("📖 View Papers", key="sidebar_view_papers", type="primary", use_container_width=True):
+                    st.session_state.page = "arxiv"
+                    st.rerun()
+        
+        st.markdown("---")
+        
         # 统计
         st.metric("⭐ Starred", len(st.session_state.starred_papers))
         st.metric("👀 Viewed", len(st.session_state.viewed_papers))
+        st.metric("📂 Categories", len(st.session_state.selected_categories))
         
         st.markdown("---")
         
