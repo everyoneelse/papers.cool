@@ -4,9 +4,9 @@ Cool Papers - Simplified Gradio Frontend
 """
 
 import gradio as gr
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 import json
 import os
 from pathlib import Path
@@ -148,7 +148,7 @@ def search_papers_with_tantivy(query: str, papers: List[Dict]) -> List[Dict]:
 
 
 def load_and_display_papers(
-    selected_date: float,
+    selected_date: str,
     selected_categories: List[str]
 ) -> Tuple[pd.DataFrame, str]:
     """
@@ -157,8 +157,8 @@ def load_and_display_papers(
     if not selected_date:
         return pd.DataFrame(), "❌ Please select a date"
     
-    # 将时间戳转换为日期字符串
-    date_str = datetime.fromtimestamp(selected_date).strftime("%Y-%m-%d")
+    # 直接使用日期字符串
+    date_str = selected_date
     
     # 加载论文
     papers = load_papers_from_json(date_str)
@@ -181,7 +181,7 @@ def load_and_display_papers(
 
 def search_and_display(
     query: str,
-    selected_date: float,
+    selected_date: str,
     selected_categories: List[str]
 ) -> Tuple[pd.DataFrame, str]:
     """
@@ -193,8 +193,8 @@ def search_and_display(
     if not selected_date:
         return pd.DataFrame(), "❌ Please select a date first"
     
-    # 将时间戳转换为日期字符串
-    date_str = datetime.fromtimestamp(selected_date).strftime("%Y-%m-%d")
+    # 直接使用日期字符串
+    date_str = selected_date
     
     # 加载当前日期的论文
     papers = load_papers_from_json(date_str)
@@ -232,12 +232,17 @@ def create_app():
         ### Browse arXiv papers by category and date, or search within a specific date
         """)
         
-        # 日期选择 - 使用日期选择器
+        # 日期选择 - 使用下拉框选择最近日期或自定义输入
         with gr.Row():
-            date_selector = gr.DateTime(
-                label="📅 Select Date",
-                value=datetime.now(),
-                include_time=False
+            # 生成最近30天的日期选项
+            recent_dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
+            
+            date_selector = gr.Dropdown(
+                choices=recent_dates,
+                value=recent_dates[0],
+                label="📅 Select Date (Recent 30 days, or type custom date)",
+                allow_custom_value=True,
+                interactive=True
             )
         
         # 分类选择 - 使用Dropdown支持多选
