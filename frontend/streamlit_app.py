@@ -33,15 +33,15 @@ ARXIV_CATEGORIES = {
     "Statistics - Machine Learning (stat.ML)": "stat.ML",
 }
 
-# 分类颜色定义
+# Pills 胶囊式颜色定义 - 使用柔和的配色方案
 CATEGORY_COLORS = {
-    "cs.AI": "#FF6B6B",      # 红色
-    "cs.CL": "#4ECDC4",      # 青色
-    "cs.CV": "#45B7D1",      # 蓝色
-    "cs.LG": "#96CEB4",      # 绿色
-    "cs.NE": "#FFEAA7",      # 黄色
-    "cs.CC": "#DFE6E9",      # 灰色
-    "stat.ML": "#A29BFE",    # 紫色
+    "cs.AI": {"bg": "#FFE5E5", "border": "#FF6B6B", "text": "#CC0000"},           # 柔和红
+    "cs.CL": {"bg": "#E0F7F7", "border": "#4ECDC4", "text": "#008B8B"},           # 柔和青
+    "cs.CV": {"bg": "#E3F2FD", "border": "#45B7D1", "text": "#1565C0"},           # 柔和蓝
+    "cs.LG": {"bg": "#E8F5E9", "border": "#96CEB4", "text": "#2E7D32"},           # 柔和绿
+    "cs.NE": {"bg": "#FFF9E6", "border": "#FFEAA7", "text": "#F57F17"},           # 柔和黄
+    "cs.CC": {"bg": "#F5F5F5", "border": "#DFE6E9", "text": "#616161"},           # 柔和灰
+    "stat.ML": {"bg": "#F3E5F5", "border": "#A29BFE", "text": "#6A1B9A"},         # 柔和紫
 }
 
 # 初始化 session state
@@ -112,30 +112,41 @@ def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
     return results
 
 
-def render_category_tags(categories: List[str]):
-    """渲染彩色分类标签"""
-    tags_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0;">'
+def render_category_pills(categories: List[str]):
+    """渲染 Pills 胶囊式分类标签"""
+    pills_html = '<div style="display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0;">'
+    
+    # 默认颜色（灰色系）
+    default_colors = {"bg": "#F0F0F0", "border": "#BDBDBD", "text": "#424242"}
     
     for cat in categories:
-        color = CATEGORY_COLORS.get(cat, "#95A5A6")  # 默认灰色
-        tags_html += f'''
+        colors = CATEGORY_COLORS.get(cat, default_colors)
+        pills_html += f'''
             <span style="
-                background-color: {color}; 
-                color: white; 
-                padding: 6px 16px; 
-                border-radius: 20px; 
-                font-size: 14px; 
-                font-weight: 500;
-                display: inline-block;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.15);
-                transition: transform 0.2s;
-            ">
-                🏷️ {cat}
+                background-color: {colors['bg']}; 
+                color: {colors['text']}; 
+                border: 2px solid {colors['border']};
+                padding: 8px 20px; 
+                border-radius: 25px; 
+                font-size: 15px; 
+                font-weight: 600;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                transition: all 0.3s ease;
+                cursor: default;
+            "
+            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)';"
+            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)';"
+            >
+                <span style="font-size: 18px;">🔖</span>
+                <span>{cat}</span>
             </span>
         '''
     
-    tags_html += '</div>'
-    return tags_html
+    pills_html += '</div>'
+    return pills_html
 
 
 def render_paper_card(paper: Dict):
@@ -212,10 +223,6 @@ def main():
         padding: 10px;
         margin: 10px 0;
     }
-    /* 标签悬停效果 */
-    span:hover {
-        transform: translateY(-2px);
-    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -233,11 +240,6 @@ def main():
         selected_cats = []
         for cat_name, cat_code in ARXIV_CATEGORIES.items():
             is_selected = cat_code in st.session_state.selected_categories
-            
-            # 使用颜色点作为视觉提示
-            color = CATEGORY_COLORS.get(cat_code, "#95A5A6")
-            color_dot = f'<span style="color: {color}; font-size: 20px;">●</span> '
-            
             if st.checkbox(cat_name, value=is_selected, key=f"cat_{cat_code}"):
                 selected_cats.append(cat_code)
         
@@ -261,11 +263,11 @@ def main():
     
     st.markdown("---")
     
-    # 显示当前选择的分类 - 使用彩色标签
+    # 显示当前选择的分类 - 使用 Pills 胶囊式标签
     if st.session_state.selected_categories:
         st.markdown("### 🔬 Current Selected Categories")
-        tags_html = render_category_tags(st.session_state.selected_categories)
-        st.markdown(tags_html, unsafe_allow_html=True)
+        pills_html = render_category_pills(st.session_state.selected_categories)
+        st.markdown(pills_html, unsafe_allow_html=True)
     else:
         st.warning("⚠️ Please select at least one category from the sidebar")
     
