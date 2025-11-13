@@ -30,6 +30,8 @@ if "selected_categories" not in st.session_state:
     st.session_state.selected_categories = ["cs.AI", "cs.CL", "cs.LG"]
 if "selected_venues" not in st.session_state:
     st.session_state.selected_venues = []
+if "selected_date" not in st.session_state:
+    st.session_state.selected_date = datetime.now().date()
 
 
 # ArXiv 分类定义
@@ -177,6 +179,26 @@ def page_home():
     
     st.session_state.selected_categories = selected_cats
     
+    # 日期选择
+    st.markdown("---")
+    col1, col2, col3 = st.columns([2, 2, 2])
+    
+    with col1:
+        selected_date = st.date_input(
+            "📅 Select Date",
+            value=st.session_state.selected_date,
+            max_value=datetime.now(),
+            help="Select the publication date for arXiv papers",
+            key="home_date_input"
+        )
+        st.session_state.selected_date = selected_date
+    
+    with col2:
+        st.markdown("&nbsp;")  # 占位
+    
+    with col3:
+        st.markdown("&nbsp;")  # 占位
+    
     # 查看选中分类的论文
     if st.session_state.selected_categories:
         if st.button("📖 View Selected Categories", type="primary", use_container_width=True):
@@ -247,17 +269,22 @@ def page_arxiv():
         return
     
     st.subheader(f"Categories: {', '.join(st.session_state.selected_categories)}")
+    st.caption(f"📅 Date: {st.session_state.selected_date.strftime('%Y-%m-%d')}")
     
-    # 日期选择
+    # 过滤和排序选项
     col1, col2, col3 = st.columns([2, 2, 2])
     
     with col1:
-        selected_date = st.date_input(
-            "Select date",
-            value=datetime.now(),
+        # 可以在此页面修改日期
+        new_date = st.date_input(
+            "Change date",
+            value=st.session_state.selected_date,
             max_value=datetime.now(),
-            key="arxiv_date"
+            key="arxiv_date_change"
         )
+        if new_date != st.session_state.selected_date:
+            st.session_state.selected_date = new_date
+            st.rerun()
     
     with col2:
         sort_by = st.selectbox(
@@ -282,7 +309,7 @@ def page_arxiv():
             "/papers/arxiv/combined",
             params={
                 "include": ",".join(st.session_state.selected_categories),
-                "date": selected_date.strftime("%Y-%m-%d"),
+                "date": st.session_state.selected_date.strftime("%Y-%m-%d"),
                 "limit": max_results
             }
         )
