@@ -28,8 +28,6 @@ if "viewed_papers" not in st.session_state:
     st.session_state.viewed_papers = set()
 if "selected_categories" not in st.session_state:
     st.session_state.selected_categories = ["cs.AI", "cs.CL", "cs.LG"]
-if "selected_venues" not in st.session_state:
-    st.session_state.selected_venues = []
 
 
 # ArXiv 分类定义
@@ -43,12 +41,6 @@ ARXIV_CATEGORIES = {
     "Statistics - Machine Learning (stat.ML)": ["stat.ML", "Statistics - Machine Learning"],
 }
 
-# 会议列表
-VENUES = [
-    "AAAI", "ACL", "COLM", "COLT", "CoRL", "CVPR", "ECCV", "EMNLP",
-    "ICCV", "ICLR", "ICML", "IJCAI", "INTERSPEECH", "IWSLT", "MLSYS",
-    "NAACL", "NDSS", "NeurIPS", "OSDI", "UAI", "USENIX-Fast", "USENIX-Sec"
-]
 
 
 def api_get(endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
@@ -183,23 +175,31 @@ def page_home():
             st.session_state.page = "arxiv"
             st.rerun()
         
-        # Feed 订阅链接
-        feed_url = f"{API_BASE_URL}/feeds/arxiv/{','.join(st.session_state.selected_categories)}"
-        st.caption(f"📡 RSS Feed: [{feed_url}]({feed_url})")
-    
-    st.markdown("---")
-    
-    # 会议论文
-    st.header("🎓 Conference Papers (Venue)")
-    st.caption("Browse papers from top conferences")
-    
-    cols = st.columns(6)
-    for idx, venue in enumerate(VENUES):
-        with cols[idx % 6]:
-            if st.button(venue, key=f"venue_{venue}", use_container_width=True):
-                st.session_state.selected_venue = venue
-                st.session_state.page = "venue"
+        st.markdown("")  # 添加一些间距
+        
+        # 日期选择器和Feed链接
+        col1, col2 = st.columns(2)
+        with col1:
+            # 日历选择器
+            st.caption("📅 View Papers by Date")
+            selected_date = st.date_input(
+                "Select date",
+                value=datetime.now(),
+                max_value=datetime.now(),
+                key="home_date_picker",
+                label_visibility="collapsed"
+            )
+            # 查看指定日期的论文按钮
+            if st.button("📅 View Papers on Selected Date", key="view_date_papers", use_container_width=True):
+                st.session_state.arxiv_date = selected_date
+                st.session_state.page = "arxiv"
                 st.rerun()
+        
+        with col2:
+            # Feed 订阅链接
+            st.caption("📡 RSS Feed")
+            feed_url = f"{API_BASE_URL}/feeds/arxiv/{','.join(st.session_state.selected_categories)}"
+            st.link_button("📡 Subscribe to RSS", feed_url, use_container_width=True)
     
     st.markdown("---")
     
@@ -252,9 +252,13 @@ def page_arxiv():
     col1, col2, col3 = st.columns([2, 2, 2])
     
     with col1:
+        # 使用从首页传递的日期（如果有）
+        default_date = st.session_state.get("arxiv_date", datetime.now())
+        if isinstance(default_date, str):
+            default_date = datetime.strptime(default_date, "%Y-%m-%d")
         selected_date = st.date_input(
             "Select date",
-            value=datetime.now(),
+            value=default_date,
             max_value=datetime.now(),
             key="arxiv_date"
         )
@@ -362,15 +366,12 @@ def page_search():
         return
     
     # 搜索选项
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         max_results = st.number_input("Max results", min_value=10, max_value=1000, value=100, step=10)
     
     with col2:
-        venue_filter = st.selectbox("Venue", ["All"] + VENUES)
-    
-    with col3:
         cat_filter = st.multiselect("Categories", [cat[0] for cat in ARXIV_CATEGORIES.values()])
     
     # 执行搜索
@@ -380,9 +381,6 @@ def page_search():
                 "query": query,
                 "max_results": max_results
             }
-            
-            if venue_filter != "All":
-                params["venue"] = venue_filter
             
             if cat_filter:
                 params["categories"] = ",".join(cat_filter)
@@ -403,47 +401,6 @@ def page_search():
                 render_paper_card(paper)
         else:
             st.info("No papers found for your query.")
-
-
-def page_venue():
-    """会议论文页面"""
-    venue = st.session_state.get("selected_venue", "")
-    
-    if not venue:
-        st.warning("No venue selected.")
-        return
-    
-    st.title(f"🎓 {venue} Papers")
-    
-    # 返回首页按钮
-    if st.button("🏠 Home", key="home_btn"):
-        st.session_state.page = "home"
-        st.rerun()
-    
-    # 获取会议论文
-    with st.spinner(f"Loading {venue} papers..."):
-        data = api_get(f"/papers/venue/{venue}")
-    
-    if not data:
-        st.error("Failed to load papers. Please check if the backend is running.")
-        return
-    
-    papers = data.get("papers", [])
-    
-    st.success(f"Found {len(papers)} papers from {venue}")
-    
-    # Feed 订阅
-    feed_url = f"{API_BASE_URL}/feeds/venue/{venue}"
-    st.caption(f"📡 RSS Feed: [{feed_url}]({feed_url})")
-    
-    st.markdown("---")
-    
-    # 显示论文列表
-    if papers:
-        for paper in papers:
-            render_paper_card(paper)
-    else:
-        st.info(f"No papers found for {venue}.")
 
 
 def page_starred():
@@ -519,7 +476,7 @@ def main():
         # 页面导航
         page = st.radio(
             "Navigation",
-            ["🏠 Home", "📚 arXiv", "🔍 Search", "🎓 Venue", "⭐ Starred"],
+            ["🏠 Home", "📚 arXiv", "🔍 Search", "⭐ Starred"],
             key="nav_radio"
         )
         
@@ -528,7 +485,6 @@ def main():
             "🏠 Home": "home",
             "📚 arXiv": "arxiv",
             "🔍 Search": "search",
-            "🎓 Venue": "venue",
             "⭐ Starred": "starred"
         }
         st.session_state.page = page_map[page]
@@ -556,8 +512,6 @@ def main():
         page_arxiv()
     elif current_page == "search":
         page_search()
-    elif current_page == "venue":
-        page_venue()
     elif current_page == "starred":
         page_starred()
     else:
