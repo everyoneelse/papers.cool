@@ -148,7 +148,7 @@ def search_papers_with_tantivy(query: str, papers: List[Dict]) -> List[Dict]:
 
 
 def load_and_display_papers(
-    selected_date: str,
+    selected_date: float,
     selected_categories: List[str]
 ) -> Tuple[pd.DataFrame, str]:
     """
@@ -157,28 +157,31 @@ def load_and_display_papers(
     if not selected_date:
         return pd.DataFrame(), "❌ Please select a date"
     
+    # 将时间戳转换为日期字符串
+    date_str = datetime.fromtimestamp(selected_date).strftime("%Y-%m-%d")
+    
     # 加载论文
-    papers = load_papers_from_json(selected_date)
+    papers = load_papers_from_json(date_str)
     
     if not papers:
-        return pd.DataFrame(), f"📭 No papers found for date {selected_date}"
+        return pd.DataFrame(), f"📭 No papers found for date {date_str}"
     
     # 根据分类过滤
     filtered_papers = filter_papers_by_categories(papers, selected_categories)
     
     if not filtered_papers:
-        return pd.DataFrame(), f"📭 No papers found in selected categories for {selected_date}"
+        return pd.DataFrame(), f"📭 No papers found in selected categories for {date_str}"
     
     # 格式化为DataFrame
     df = format_papers_dataframe(filtered_papers)
     
-    status_msg = f"✅ Found {len(filtered_papers)} papers for {selected_date}"
+    status_msg = f"✅ Found {len(filtered_papers)} papers for {date_str}"
     return df, status_msg
 
 
 def search_and_display(
     query: str,
-    selected_date: str,
+    selected_date: float,
     selected_categories: List[str]
 ) -> Tuple[pd.DataFrame, str]:
     """
@@ -190,11 +193,14 @@ def search_and_display(
     if not selected_date:
         return pd.DataFrame(), "❌ Please select a date first"
     
+    # 将时间戳转换为日期字符串
+    date_str = datetime.fromtimestamp(selected_date).strftime("%Y-%m-%d")
+    
     # 加载当前日期的论文
-    papers = load_papers_from_json(selected_date)
+    papers = load_papers_from_json(date_str)
     
     if not papers:
-        return pd.DataFrame(), f"📭 No papers found for date {selected_date}"
+        return pd.DataFrame(), f"📭 No papers found for date {date_str}"
     
     # 根据分类过滤
     filtered_papers = filter_papers_by_categories(papers, selected_categories)
@@ -208,7 +214,7 @@ def search_and_display(
     # 格式化为DataFrame
     df = format_papers_dataframe(search_results)
     
-    status_msg = f"🔍 Found {len(search_results)} results for '{query}' in {selected_date}"
+    status_msg = f"🔍 Found {len(search_results)} results for '{query}' in {date_str}"
     return df, status_msg
 
 
@@ -226,12 +232,12 @@ def create_app():
         ### Browse arXiv papers by category and date, or search within a specific date
         """)
         
-        # 日期选择
+        # 日期选择 - 使用日期选择器
         with gr.Row():
-            date_selector = gr.Textbox(
-                label="📅 Date (YYYY-MM-DD)",
-                value=datetime.now().strftime("%Y-%m-%d"),
-                placeholder="2025-11-13"
+            date_selector = gr.DateTime(
+                label="📅 Select Date",
+                value=datetime.now(),
+                include_time=False
             )
         
         # 分类选择 - 使用Dropdown支持多选
