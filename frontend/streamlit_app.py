@@ -175,18 +175,31 @@ def page_home():
             st.session_state.page = "arxiv"
             st.rerun()
         
-        # 日期和Feed链接
+        st.markdown("")  # 添加一些间距
+        
+        # 日期选择器和Feed链接
         col1, col2 = st.columns(2)
         with col1:
-            # 日历链接
-            today = datetime.now().strftime("%Y-%m-%d")
-            calendar_url = f"{API_BASE_URL}/papers/arxiv/combined?include={','.join(st.session_state.selected_categories)}&date={today}"
-            st.caption(f"📅 [View by Date](?date={today})")
+            # 日历选择器
+            st.caption("📅 View Papers by Date")
+            selected_date = st.date_input(
+                "Select date",
+                value=datetime.now(),
+                max_value=datetime.now(),
+                key="home_date_picker",
+                label_visibility="collapsed"
+            )
+            # 查看指定日期的论文按钮
+            if st.button("📅 View Papers on Selected Date", key="view_date_papers", use_container_width=True):
+                st.session_state.arxiv_date = selected_date
+                st.session_state.page = "arxiv"
+                st.rerun()
         
         with col2:
             # Feed 订阅链接
+            st.caption("📡 RSS Feed")
             feed_url = f"{API_BASE_URL}/feeds/arxiv/{','.join(st.session_state.selected_categories)}"
-            st.caption(f"📡 [RSS Feed]({feed_url})")
+            st.link_button("📡 Subscribe to RSS", feed_url, use_container_width=True)
     
     st.markdown("---")
     
@@ -239,9 +252,13 @@ def page_arxiv():
     col1, col2, col3 = st.columns([2, 2, 2])
     
     with col1:
+        # 使用从首页传递的日期（如果有）
+        default_date = st.session_state.get("arxiv_date", datetime.now())
+        if isinstance(default_date, str):
+            default_date = datetime.strptime(default_date, "%Y-%m-%d")
         selected_date = st.date_input(
             "Select date",
-            value=datetime.now(),
+            value=default_date,
             max_value=datetime.now(),
             key="arxiv_date"
         )
