@@ -78,3 +78,38 @@
 
 ## 修改的文件
 - `/workspace/frontend/gradio_app.py`
+
+---
+
+## 后续修复 (09:05)
+
+### 问题
+运行时遇到错误：`AttributeError: 'float' object has no attribute 'strftime'`
+
+### 原因
+`gr.DateTime` 组件返回的是 **float 类型的时间戳**，而不是 datetime 对象。
+
+### 解决方案
+修改 `fetch_arxiv_papers()` 函数：
+- 将参数类型从 `datetime` 改为 `float`
+- 使用 `datetime.fromtimestamp()` 将时间戳转换为 datetime 对象
+- 然后再调用 `strftime()` 格式化为字符串
+
+### 修复后的代码
+```python
+def fetch_arxiv_papers(
+    selected_categories: List[str],
+    selected_date: float,  # 改为 float
+    max_results: int,
+    starred_papers: set
+) -> Tuple[str, set]:
+    # 格式化日期 - gr.DateTime 返回的是 float 时间戳
+    if selected_date:
+        date_obj = datetime.fromtimestamp(selected_date)
+        date_str = date_obj.strftime("%Y-%m-%d")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    # ... 其余代码
+```
+
+✅ **修复完成，代码已通过语法检查**

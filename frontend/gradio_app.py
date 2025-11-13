@@ -113,7 +113,7 @@ def format_papers_list(papers: List[Dict], starred_papers: set) -> str:
 
 def fetch_arxiv_papers(
     selected_categories: List[str],
-    selected_date: datetime,
+    selected_date: float,
     max_results: int,
     starred_papers: set
 ) -> Tuple[str, set]:
@@ -124,8 +124,12 @@ def fetch_arxiv_papers(
     # 转换分类名称为代码
     category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in selected_categories]
     
-    # 格式化日期
-    date_str = selected_date.strftime("%Y-%m-%d") if selected_date else datetime.now().strftime("%Y-%m-%d")
+    # 格式化日期 - gr.DateTime 返回的是 float 时间戳
+    if selected_date:
+        date_obj = datetime.fromtimestamp(selected_date)
+        date_str = date_obj.strftime("%Y-%m-%d")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
     
     # 调用 API
     data = api_get(
