@@ -52,21 +52,48 @@ if "selected_categories" not in st.session_state:
 def load_papers_from_json(date_str: str) -> List[Dict]:
     """
     从JSON文件加载指定日期的论文数据
-    假设文件命名格式为: papers_YYYY-MM-DD.json
+    支持两种文件格式:
+    1. papers_YYYY-MM-DD_100percent.json (优先)
+    2. papers_YYYY-MM-DD.json (备选)
     """
     data_path = Path(DATA_DIR)
-    json_file = data_path / f"papers_{date_str}.json"
     
-    if not json_file.exists():
-        return []
+    # 尝试两种文件名格式
+    json_files = [
+        data_path / f"papers_{date_str}_100percent.json",
+        data_path / f"papers_{date_str}.json",
+    ]
     
-    try:
-        with open(json_file, 'r', encoding='utf-8') as f:
-            papers = json.load(f)
-            return papers if isinstance(papers, list) else []
-    except Exception as e:
-        st.error(f"Error loading papers from {json_file}: {e}")
-        return []
+    for json_file in json_files:
+        if json_file.exists():
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                    # 处理不同的数据格式
+                    if isinstance(data, list):
+                        # 直接是论文列表
+                        return data
+                    elif isinstance(data, dict):
+                        # 包含 metadata 的格式
+                        if "papers" in data:
+                            return data["papers"]
+                        else:
+                            # 可能是单个论文对象，转换为列表
+                            return [data]
+                    else:
+                        st.warning(f"Unexpected data format in {json_file}")
+                        continue
+                        
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON in {json_file}: {e}")
+                continue
+            except Exception as e:
+                st.error(f"Error loading papers from {json_file}: {e}")
+                continue
+    
+    # 没有找到任何文件
+    return []
 
 
 def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> List[Dict]:
