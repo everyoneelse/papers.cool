@@ -121,14 +121,31 @@ class PaperSearchEngine:
             self.index.reload()
             searcher = self.index.searcher()
             
-            # 构建查询解析器（搜索标题、摘要、作者）
-            query_parser = tantivy.QueryParser.for_index(
-                self.index,
-                ["title", "abstract", "authors"]
-            )
-            
-            # 解析查询
-            parsed_query = query_parser.parse_query(query)
+            # 构建查询 - 兼容不同版本的 tantivy API
+            try:
+                # 尝试新版本 API (0.21+)
+                if hasattr(tantivy, 'QueryParser'):
+                    query_parser = tantivy.QueryParser.for_index(
+                        self.index,
+                        ["title", "abstract", "authors"]
+                    )
+                    parsed_query = query_parser.parse_query(query)
+                else:
+                    # 使用索引对象的方法
+                    parsed_query = self.index.parse_query(
+                        query,
+                        ["title", "abstract", "authors"]
+                    )
+            except AttributeError:
+                # 备用方案：使用更简单的 API
+                # 获取 schema 中的字段
+                title_field = self.schema.get_field("title")
+                abstract_field = self.schema.get_field("abstract")
+                authors_field = self.schema.get_field("authors")
+                
+                # 创建多字段查询
+                query_lower = query.lower()
+                parsed_query = self.index.parse_query(query_lower)
             
             # 执行搜索（BM25 排序）
             search_results = searcher.search(parsed_query, limit=max_results)
@@ -161,6 +178,8 @@ class PaperSearchEngine:
             
         except Exception as e:
             logger.error(f"Error searching for '{query}': {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def search_by_title_only(self, title: str, max_results: int = 10) -> List[Dict]:
@@ -178,8 +197,15 @@ class PaperSearchEngine:
             self.index.reload()
             searcher = self.index.searcher()
             
-            query_parser = tantivy.QueryParser.for_index(self.index, ["title"])
-            parsed_query = query_parser.parse_query(title)
+            # 兼容不同版本的 API
+            try:
+                if hasattr(tantivy, 'QueryParser'):
+                    query_parser = tantivy.QueryParser.for_index(self.index, ["title"])
+                    parsed_query = query_parser.parse_query(title)
+                else:
+                    parsed_query = self.index.parse_query(title, ["title"])
+            except AttributeError:
+                parsed_query = self.index.parse_query(title)
             
             search_results = searcher.search(parsed_query, limit=max_results)
             

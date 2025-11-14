@@ -12,12 +12,22 @@ import os
 from pathlib import Path
 
 # 导入 BM25 搜索引擎
+SEARCH_ENGINE_AVAILABLE = False
+PaperSearchEngine = None
+search_papers_bm25 = None
+
 try:
-    from search_engine import PaperSearchEngine, search_papers_bm25
+    # 优先使用简化版本（兼容性最好）
+    from search_engine_simple import SimplePaperSearchEngine as PaperSearchEngine, simple_search_papers as search_papers_bm25
     SEARCH_ENGINE_AVAILABLE = True
 except ImportError:
-    SEARCH_ENGINE_AVAILABLE = False
-    st.warning("⚠️ Tantivy 搜索引擎不可用，将使用简单搜索模式。请安装: pip install tantivy")
+    try:
+        # 备用：使用完整版本
+        from search_engine import PaperSearchEngine, search_papers_bm25
+        SEARCH_ENGINE_AVAILABLE = True
+    except ImportError:
+        SEARCH_ENGINE_AVAILABLE = False
+        st.warning("⚠️ Tantivy 搜索引擎不可用，将使用简单搜索模式。请安装: pip install tantivy")
 
 # 页面配置
 st.set_page_config(
