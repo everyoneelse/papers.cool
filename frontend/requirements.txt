@@ -1,3 +1,6 @@
 streamlit>=1.28.0
 httpx>=0.25.0
 python-dateutil>=2.8.2
+
+# BM25 搜索引擎（高质量全文搜索）
+tantivy>=0.20.0
