@@ -11,6 +11,24 @@ import json
 import os
 from pathlib import Path
 
+# 导入 BM25 搜索引擎
+SEARCH_ENGINE_AVAILABLE = False
+PaperSearchEngine = None
+search_papers_bm25 = None
+
+try:
+    # 优先使用简化版本（兼容性最好）
+    from search_engine_simple import SimplePaperSearchEngine as PaperSearchEngine, simple_search_papers as search_papers_bm25
+    SEARCH_ENGINE_AVAILABLE = True
+except ImportError:
+    try:
+        # 备用：使用完整版本
+        from search_engine import PaperSearchEngine, search_papers_bm25
+        SEARCH_ENGINE_AVAILABLE = True
+    except ImportError:
+        SEARCH_ENGINE_AVAILABLE = False
+        st.warning("⚠️ Tantivy 搜索引擎不可用，将使用简单搜索模式。请安装: pip install tantivy")
+
 # 页面配置
 st.set_page_config(
     page_title="Cool Papers",
@@ -48,25 +66,58 @@ CATEGORY_COLORS = {
 if "selected_categories" not in st.session_state:
     st.session_state.selected_categories = ["cs.AI", "cs.LG"]
 
+if "search_engine" not in st.session_state and SEARCH_ENGINE_AVAILABLE:
+    st.session_state.search_engine = None
+
+if "search_mode" not in st.session_state:
+    st.session_state.search_mode = "bm25" if SEARCH_ENGINE_AVAILABLE else "simple"
+
 
 def load_papers_from_json(date_str: str) -> List[Dict]:
     """
     从JSON文件加载指定日期的论文数据
-    假设文件命名格式为: papers_YYYY-MM-DD.json
+    支持两种文件格式:
+    1. papers_YYYY-MM-DD_100percent.json (优先)
+    2. papers_YYYY-MM-DD.json (备选)
     """
     data_path = Path(DATA_DIR)
-    json_file = data_path / f"papers_{date_str}.json"
     
-    if not json_file.exists():
-        return []
+    # 尝试两种文件名格式
+    json_files = [
+        data_path / f"papers_{date_str}_100percent.json",
+        data_path / f"papers_{date_str}.json",
+    ]
     
-    try:
-        with open(json_file, 'r', encoding='utf-8') as f:
-            papers = json.load(f)
-            return papers if isinstance(papers, list) else []
-    except Exception as e:
-        st.error(f"Error loading papers from {json_file}: {e}")
-        return []
+    for json_file in json_files:
+        if json_file.exists():
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                    # 处理不同的数据格式
+                    if isinstance(data, list):
+                        # 直接是论文列表
+                        return data
+                    elif isinstance(data, dict):
+                        # 包含 metadata 的格式
+                        if "papers" in data:
+                            return data["papers"]
+                        else:
+                            # 可能是单个论文对象，转换为列表
+                            return [data]
+                    else:
+                        st.warning(f"Unexpected data format in {json_file}")
+                        continue
+                        
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON in {json_file}: {e}")
+                continue
+            except Exception as e:
+                st.error(f"Error loading papers from {json_file}: {e}")
+                continue
+    
+    # 没有找到任何文件
+    return []
 
 
 def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> List[Dict]:
@@ -90,10 +141,9 @@ def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> Li
     return filtered
 
 
-def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
+def search_papers_simple(query: str, papers: List[Dict]) -> List[Dict]:
     """
-    在论文中搜索（搜索标题和摘要）
-    简单的字符串匹配实现
+    简单的字符串匹配搜索（备用方案）
     """
     if not query:
         return papers
@@ -110,6 +160,47 @@ def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
             results.append(paper)
     
     return results
+
+
+def search_papers(query: str, papers: List[Dict], categories: Optional[List[str]] = None) -> List[Dict]:
+    """
+    搜索论文 - 智能选择搜索方式
+    
+    Args:
+        query: 搜索关键词
+        papers: 论文列表
+        categories: 分类过滤
+        
+    Returns:
+        搜索结果列表
+    """
+    if not query or not query.strip():
+        return papers
+    
+    # 如果 BM25 搜索引擎可用，优先使用
+    if SEARCH_ENGINE_AVAILABLE and st.session_state.search_mode == "bm25":
+        try:
+            # 初始化或获取搜索引擎
+            if st.session_state.search_engine is None:
+                st.session_state.search_engine = PaperSearchEngine()
+            
+            # 使用 BM25 搜索
+            results = search_papers_bm25(
+                query=query,
+                papers=papers,
+                categories=categories,
+                search_engine=st.session_state.search_engine,
+                rebuild_index=False  # 不每次都重建索引
+            )
+            
+            return results
+            
+        except Exception as e:
+            st.warning(f"⚠️ BM25 搜索失败，使用简单搜索: {e}")
+            return search_papers_simple(query, papers)
+    else:
+        # 使用简单搜索
+        return search_papers_simple(query, papers)
 
 
 def render_category_pills(categories: List[str]):
@@ -252,10 +343,42 @@ def main():
         
         st.markdown("---")
         
+        # 搜索模式设置
+        st.subheader("🔍 Search Settings")
+        
+        if SEARCH_ENGINE_AVAILABLE:
+            search_mode = st.radio(
+                "Search Mode",
+                options=["bm25", "simple"],
+                format_func=lambda x: "🚀 BM25 (High Quality)" if x == "bm25" else "📝 Simple (Fast)",
+                index=0 if st.session_state.search_mode == "bm25" else 1,
+                help="BM25: 使用 Tantivy 搜索引擎，支持相关性排序\nSimple: 简单字符串匹配"
+            )
+            st.session_state.search_mode = search_mode
+            
+            # 显示搜索引擎状态
+            if st.session_state.search_engine is not None:
+                stats = st.session_state.search_engine.get_index_stats()
+                st.caption(f"📊 Indexed papers: {stats.get('num_documents', 0)}")
+                
+                # 重建索引按钮
+                if st.button("🔄 Rebuild Index", help="重新构建搜索索引"):
+                    with st.spinner("正在重建索引..."):
+                        st.session_state.search_engine.clear_index()
+                        st.session_state.search_engine = None
+                    st.success("索引已清空，下次搜索时会自动重建")
+                    st.rerun()
+        else:
+            st.info("💡 安装 tantivy 启用 BM25 搜索:\n```bash\npip install tantivy\n```")
+        
+        st.markdown("---")
+        
         # 关于
         st.caption("**About**")
         st.caption("Cool Papers - Simplified Interface")
         st.caption("Data loaded from local JSON files")
+        if SEARCH_ENGINE_AVAILABLE:
+            st.caption("🚀 BM25 Search Engine Enabled")
     
     # 主页面
     st.title("📚 Cool Papers - Paper Browser & Search")
@@ -324,12 +447,24 @@ def main():
                 else:
                     # 如果有搜索查询，则进行搜索
                     if search_query and search_query.strip():
-                        search_results = search_papers(search_query, filtered_papers)
+                        # 显示搜索模式
+                        search_mode_text = "🚀 BM25" if st.session_state.search_mode == "bm25" else "📝 Simple"
+                        
+                        with st.spinner(f"正在搜索 ({search_mode_text})..."):
+                            search_results = search_papers(
+                                search_query, 
+                                filtered_papers,
+                                categories=st.session_state.selected_categories
+                            )
                         
                         if not search_results:
                             st.warning(f"📭 No results found for query: '{search_query}'")
                         else:
-                            st.success(f"🔍 Found {len(search_results)} results for '{search_query}' in {date_str}")
+                            # 显示搜索结果和模式
+                            st.success(
+                                f"🔍 Found {len(search_results)} results for '{search_query}' "
+                                f"({search_mode_text} mode)"
+                            )
                             
                             # 显示搜索结果
                             for paper in search_results:
