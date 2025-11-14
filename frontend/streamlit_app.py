@@ -113,40 +113,40 @@ def search_papers(query: str, papers: List[Dict]) -> List[Dict]:
 
 
 def render_category_pills(categories: List[str]):
-    """渲染 Pills 胶囊式分类标签"""
-    pills_html = '<div style="display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0;">'
-    
+    """渲染 Pills 胶囊式分类标签 - 使用Streamlit原生组件"""
     # 默认颜色（灰色系）
     default_colors = {"bg": "#F0F0F0", "border": "#BDBDBD", "text": "#424242"}
     
-    for cat in categories:
-        colors = CATEGORY_COLORS.get(cat, default_colors)
-        pills_html += f'''
-            <span style="
-                background-color: {colors['bg']}; 
-                color: {colors['text']}; 
-                border: 2px solid {colors['border']};
-                padding: 8px 20px; 
-                border-radius: 25px; 
-                font-size: 15px; 
-                font-weight: 600;
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-                transition: all 0.3s ease;
-                cursor: default;
-            "
-            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)';"
-            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)';"
-            >
-                <span style="font-size: 18px;">🔖</span>
-                <span>{cat}</span>
-            </span>
-        '''
+    # 创建列来显示pills
+    cols = st.columns(len(categories))
     
-    pills_html += '</div>'
-    return pills_html
+    for idx, cat in enumerate(categories):
+        colors = CATEGORY_COLORS.get(cat, default_colors)
+        with cols[idx]:
+            # 使用Streamlit的markdown显示，但不使用JavaScript事件
+            st.markdown(
+                f"""
+                <div style="
+                    background-color: {colors['bg']}; 
+                    color: {colors['text']}; 
+                    border: 2px solid {colors['border']};
+                    padding: 8px 20px; 
+                    border-radius: 25px; 
+                    font-size: 15px; 
+                    font-weight: 600;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                    margin: 5px 0;
+                    white-space: nowrap;
+                ">
+                    <span style="font-size: 18px;">🔖</span>
+                    <span>{cat}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
 
 def render_paper_card(paper: Dict):
@@ -266,8 +266,7 @@ def main():
     # 显示当前选择的分类 - 使用 Pills 胶囊式标签
     if st.session_state.selected_categories:
         st.markdown("### 🔬 Current Selected Categories")
-        pills_html = render_category_pills(st.session_state.selected_categories)
-        st.markdown(pills_html, unsafe_allow_html=True)
+        render_category_pills(st.session_state.selected_categories)
     else:
         st.warning("⚠️ Please select at least one category from the sidebar")
     
