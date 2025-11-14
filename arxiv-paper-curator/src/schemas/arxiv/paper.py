@@ -17,6 +17,16 @@ class ArxivPaper(BaseModel):
     pdf_url: str = Field(..., description="URL to PDF")
 
 
+class ArxivSearchResult(BaseModel):
+    """Schema for arXiv API search results with metadata."""
+
+    papers: List[ArxivPaper] = Field(..., description="List of papers returned")
+    total_results: int = Field(..., description="Total number of results available")
+    start_index: int = Field(..., description="Starting index of this result set")
+    items_per_page: int = Field(..., description="Number of items per page")
+    search_query: str = Field(..., description="The search query used")
+
+
 class PaperBase(BaseModel):
     # Core arXiv metadata
     arxiv_id: str = Field(..., description="arXiv paper ID")

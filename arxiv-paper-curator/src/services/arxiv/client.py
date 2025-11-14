@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from src.config import ArxivSettings
 from src.exceptions import ArxivAPIException, ArxivAPITimeoutError, ArxivParseError, PDFDownloadException, PDFDownloadTimeoutError
-from src.schemas.arxiv.paper import ArxivPaper
+from src.schemas.arxiv.paper import ArxivPaper, ArxivSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,8 @@ class ArxivClient:
         sort_order: str = "descending",
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
-    ) -> List[ArxivPaper]:
+        use_china_timezone: bool = False,
+    ) -> ArxivSearchResult:
         """
         Fetch papers from arXiv for the configured category.
 
@@ -72,9 +73,10 @@ class ArxivClient:
             sort_order: Sort order (ascending, descending)
             from_date: Filter papers submitted after this date (format: YYYYMMDD)
             to_date: Filter papers submitted before this date (format: YYYYMMDD)
+            use_china_timezone: Whether from_date/to_date are in China timezone (UTC+8)
 
         Returns:
-            List of ArxivPaper objects for the configured category
+            ArxivSearchResult containing papers and metadata
         """
         if max_results is None:
             max_results = self.max_results
@@ -102,7 +104,7 @@ class ArxivClient:
         url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
 
         try:
-            logger.info(f"Fetching {max_results} {self.search_category} papers from arXiv")
+            logger.info(f"Fetching {max_results} {self.search_category} papers from arXiv (start={start})")
 
             # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
             if self._last_request_time is not None:
@@ -118,10 +120,10 @@ class ArxivClient:
                 response.raise_for_status()
                 xml_data = response.text
 
-            papers = self._parse_response(xml_data)
-            logger.info(f"Fetched {len(papers)} papers")
+            result = self._parse_response(xml_data, search_query, start, max_results)
+            logger.info(f"Fetched {len(result.papers)} papers (total available: {result.total_results})")
 
-            return papers
+            return result
 
         except httpx.TimeoutException as e:
             logger.error(f"arXiv API timeout: {e}")
@@ -140,7 +142,7 @@ class ArxivClient:
         start: int = 0,
         sort_by: str = "submittedDate",
         sort_order: str = "descending",
-    ) -> List[ArxivPaper]:
+    ) -> ArxivSearchResult:
         """
         Fetch papers from arXiv using a custom search query.
 
@@ -152,7 +154,7 @@ class ArxivClient:
             sort_order: Sort order (ascending, descending)
 
         Returns:
-            List of ArxivPaper objects matching the search query
+            ArxivSearchResult containing papers and metadata
 
         Examples:
             # Papers from last 30 days
@@ -193,10 +195,10 @@ class ArxivClient:
                 response.raise_for_status()
                 xml_data = response.text
 
-            papers = self._parse_response(xml_data)
-            logger.info(f"Query returned {len(papers)} papers")
+            result = self._parse_response(xml_data, search_query, start, max_results)
+            logger.info(f"Query returned {len(result.papers)} papers (total available: {result.total_results})")
 
-            return papers
+            return result
 
         except httpx.TimeoutException as e:
             logger.error(f"arXiv API timeout: {e}")
@@ -231,10 +233,10 @@ class ArxivClient:
                 response.raise_for_status()
                 xml_data = response.text
 
-            papers = self._parse_response(xml_data)
+            result = self._parse_response(xml_data, f"id:{clean_id}", 0, 1)
 
-            if papers:
-                return papers[0]
+            if result.papers:
+                return result.papers[0]
             else:
                 logger.warning(f"Paper {arxiv_id} not found")
                 return None
@@ -249,27 +251,205 @@ class ArxivClient:
             logger.error(f"Failed to fetch paper {arxiv_id} from arXiv: {e}")
             raise ArxivAPIException(f"Unexpected error fetching paper {arxiv_id} from arXiv: {e}")
 
-    def _parse_response(self, xml_data: str) -> List[ArxivPaper]:
+    async def fetch_all_papers_in_date_range(
+        self,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        max_per_page: int = 100,
+        max_total_papers: Optional[int] = None,
+        sort_by: str = "submittedDate",
+        sort_order: str = "descending",
+        use_china_timezone: bool = False,
+        max_retries_per_page: int = 5,
+    ) -> tuple[List[ArxivPaper], List[ArxivSearchResult]]:
         """
-        Parse arXiv API XML response into ArxivPaper objects.
+        Fetch ALL papers from arXiv for the configured category within a date range.
+        Uses pagination to get all available papers, not limited to max_results.
+
+        Args:
+            from_date: Filter papers submitted after this date (format: YYYYMMDD)
+            to_date: Filter papers submitted before this date (format: YYYYMMDD)
+            max_per_page: Maximum papers per API request (1-1000, arXiv limit)
+            max_total_papers: Maximum total papers to fetch (None = no limit)
+            sort_by: Sort criteria (submittedDate, lastUpdatedDate, relevance)
+            sort_order: Sort order (ascending, descending)
+            use_china_timezone: Whether from_date/to_date are in China timezone (UTC+8)
+            max_retries_per_page: Maximum retry attempts per page before skipping (default: 5)
+
+        Returns:
+            Tuple of (all_papers, all_results) where:
+                - all_papers: List of all ArxivPaper objects for the configured category in date range
+                - all_results: List of ArxivSearchResult objects from each page (for metadata)
+        """
+        all_papers = []
+        all_results = []
+        failed_pages = []  # Track pages that failed after all retries
+        start = 0
+
+        logger.info(f"Starting to fetch ALL {self.search_category} papers from {from_date} to {to_date}")
+
+        while True:
+            page_retry_count = 0
+            page_fetched = False
+            
+            # Try to fetch current page with limited retries
+            while page_retry_count < max_retries_per_page:
+                try:
+                    # Fetch one page
+                    result = await self.fetch_papers(
+                        max_results=min(max_per_page, 1000),  # arXiv limit is 1000 per request
+                        start=start,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        from_date=from_date,
+                        to_date=to_date,
+                        use_china_timezone=use_china_timezone,
+                    )
+
+                    batch = result.papers
+                    if not batch:
+                        # No more papers
+                        logger.info(f"No more papers found (start={start})")
+                        page_fetched = True
+                        break
+
+                    all_papers.extend(batch)
+                    all_results.append(result)
+                    logger.info(
+                        f"Fetched {len(batch)} papers (total so far: {len(all_papers)}/{result.total_results}), "
+                        f"next start: {start + len(batch)}"
+                    )
+                    
+                    page_fetched = True
+                    break  # Successfully fetched this page
+
+                except (ArxivAPITimeoutError, ArxivAPIException) as e:
+                    page_retry_count += 1
+                    if page_retry_count < max_retries_per_page:
+                        wait_time = 10 * page_retry_count  # Exponential backoff: 10s, 20s, 30s, 40s, 50s
+                        logger.warning(
+                            f"API error at start={start} (attempt {page_retry_count}/{max_retries_per_page}): {e}. "
+                            f"Retrying in {wait_time} seconds..."
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"Failed to fetch page at start={start} after {max_retries_per_page} attempts. "
+                            f"Skipping this page and continuing..."
+                        )
+                        failed_pages.append(start)
+                        break
+                
+                except Exception as e:
+                    # Unexpected error - log and retry
+                    page_retry_count += 1
+                    if page_retry_count < max_retries_per_page:
+                        logger.error(f"Unexpected error at start={start} (attempt {page_retry_count}/{max_retries_per_page}): {e}")
+                        await asyncio.sleep(10 * page_retry_count)
+                    else:
+                        logger.error(f"Failed to fetch page at start={start} after unexpected errors. Skipping...")
+                        failed_pages.append(start)
+                        break
+            
+            # If no papers were fetched and we're at the beginning, something is seriously wrong
+            if not page_fetched and start == 0:
+                logger.error("Failed to fetch first page. Cannot continue.")
+                break
+            
+            # If this page failed but we have papers, continue to next page
+            if not page_fetched and len(all_papers) > 0:
+                logger.warning(f"Skipping failed page at start={start}, continuing to next page")
+                start += max_per_page  # Move to next page
+                continue
+            
+            # Check termination conditions
+            if not batch or len(batch) == 0:
+                break
+            
+            # Check if we've reached the total limit
+            if max_total_papers and len(all_papers) >= max_total_papers:
+                all_papers = all_papers[:max_total_papers]
+                logger.info(f"Reached max_total_papers limit: {max_total_papers}")
+                break
+
+            # Check if this was the last page
+            if len(batch) < max_per_page:
+                logger.info(f"Received less than max_per_page ({len(batch)} < {max_per_page}), last page reached")
+                break
+            
+            # Check if we've fetched all available papers
+            if result and len(all_papers) >= result.total_results:
+                logger.info(f"Fetched all available papers ({len(all_papers)} >= {result.total_results})")
+                break
+
+            # Move to next page
+            start += len(batch)
+
+            # Safety check to prevent infinite loops
+            if start > 10000:  # Reasonable upper limit
+                logger.warning(f"Safety limit reached at start={start}, stopping pagination")
+                break
+
+        # Report results
+        if failed_pages:
+            logger.warning(
+                f"Completed with {len(failed_pages)} failed pages at positions: {failed_pages}. "
+                f"Total papers retrieved: {len(all_papers)}. Some papers may be missing."
+            )
+        else:
+            logger.info(f"Successfully fetched ALL papers: {len(all_papers)} total papers retrieved")
+        
+        return all_papers, all_results
+
+    def _parse_response(self, xml_data: str, search_query: str = "", start: int = 0, max_results: int = 0) -> ArxivSearchResult:
+        """
+        Parse arXiv API XML response into ArxivSearchResult with metadata.
 
         Args:
             xml_data: Raw XML response from arXiv API
+            search_query: The search query used (for metadata)
+            start: Starting index (for metadata)
+            max_results: Max results requested (for metadata)
 
         Returns:
-            List of parsed ArxivPaper objects
+            ArxivSearchResult with papers and metadata
         """
         try:
             root = ET.fromstring(xml_data)
+            
+            # Extract metadata from OpenSearch namespace
+            total_results = 0
+            start_index = start
+            items_per_page = max_results
+            
+            # Try to extract OpenSearch metadata
+            total_elem = root.find("{http://a9.com/-/spec/opensearch/1.1/}totalResults")
+            if total_elem is not None and total_elem.text:
+                total_results = int(total_elem.text)
+            
+            start_elem = root.find("{http://a9.com/-/spec/opensearch/1.1/}startIndex")
+            if start_elem is not None and start_elem.text:
+                start_index = int(start_elem.text)
+            
+            items_elem = root.find("{http://a9.com/-/spec/opensearch/1.1/}itemsPerPage")
+            if items_elem is not None and items_elem.text:
+                items_per_page = int(items_elem.text)
+            
+            # Parse papers
             entries = root.findall("atom:entry", self.namespaces)
-
             papers = []
             for entry in entries:
                 paper = self._parse_single_entry(entry)
                 if paper:
                     papers.append(paper)
 
-            return papers
+            return ArxivSearchResult(
+                papers=papers,
+                total_results=total_results,
+                start_index=start_index,
+                items_per_page=items_per_page,
+                search_query=search_query,
+            )
 
         except ET.ParseError as e:
             logger.error(f"Failed to parse arXiv XML response: {e}")
