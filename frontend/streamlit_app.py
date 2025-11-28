@@ -18,8 +18,12 @@ try:
     from search_engine import PaperSearchEngine, search_papers_bm25
     SEARCH_ENGINE_AVAILABLE = True
 except ImportError:
+    import traceback
+    traceback.print_exc()
     SEARCH_ENGINE_AVAILABLE = False
     st.warning("⚠️ Tantivy 搜索引擎不可用，将使用简单搜索模式。请安装: pip install tantivy")
+
+import re
 
 
 # 页面配置
@@ -59,6 +63,7 @@ ARXIV_CATEGORIES = {
     "Neural and Evolutionary Computing (cs.NE)": "cs.NE",
     "Computational Complexity (cs.CC)": "cs.CC",
     "Statistics - Machine Learning (stat.ML)": "stat.ML",
+    "PubMed (Medical Research)": "PubMed",
 }
 
 # Pills 胶囊式颜色定义 - 使用柔和的配色方案
@@ -70,6 +75,7 @@ CATEGORY_COLORS = {
     "cs.NE": {"bg": "#FFF9E6", "border": "#FFEAA7", "text": "#F57F17"},           # 柔和黄
     "cs.CC": {"bg": "#F5F5F5", "border": "#DFE6E9", "text": "#616161"},           # 柔和灰
     "stat.ML": {"bg": "#F3E5F5", "border": "#A29BFE", "text": "#6A1B9A"},         # 柔和紫
+    "PubMed": {"bg": "#FFEBEE", "border": "#EF5350", "text": "#C62828"},         # 医疗红
 }
 
 
@@ -166,21 +172,135 @@ def filter_papers_by_categories(papers: List[Dict], categories: List[str]) -> Li
     """根据选择的分类过滤论文"""
     if not categories:
         return papers
-    
+
     # 转换分类名称为代码
     category_codes = [ARXIV_CATEGORIES.get(cat, cat) for cat in categories]
-    
+
     filtered = []
     for paper in papers:
         paper_categories = paper.get("categories", [])
         if isinstance(paper_categories, str):
             paper_categories = [paper_categories]
-        
+
         # 检查论文是否属于任一选中的分类
         if any(cat in paper_categories for cat in category_codes):
             filtered.append(paper)
-    
+
     return filtered
+
+
+def find_matching_terms(query: str, title: str, abstract: str) -> Dict[str, List[str]]:
+    """
+    找到与查询匹配的关键词（支持 stemming）
+
+    Args:
+        query: 搜索查询
+        title: 论文标题
+        abstract: 论文摘要
+
+    Returns:
+        包含匹配关键词的字典
+    """
+    if not query or not query.strip():
+        return {"title": [], "abstract": []}
+
+    try:
+        import tantivy
+
+        # 创建与搜索索引相同的 stemmer analyzer
+        tokenizer = tantivy.Tokenizer.whitespace()
+        stemmer_filter = tantivy.Filter.stemmer('english')
+        stemmer_analyzer = tantivy.TextAnalyzerBuilder(tokenizer).filter(stemmer_filter).build()
+
+        # 将查询分割为关键词并进行 stemming
+        query_terms = re.findall(r'\b\w+\b', query.lower())
+        if not query_terms:
+            query_terms = [query.lower()]
+
+        # 为每个查询词创建词干映射
+        query_stems = {}
+        for term in query_terms:
+            try:
+                stemmed = list(stemmer_analyzer.analyze(term))
+                if stemmed:
+                    stem = stemmed[0]  # 取第一个词干
+                    if stem not in query_stems:
+                        query_stems[stem] = []
+                    query_stems[stem].append(term)
+            except:
+                # 如果 stemming 失败，使用原始词
+                stem = term
+                if stem not in query_stems:
+                    query_stems[stem] = []
+                query_stems[stem].append(term)
+
+    except ImportError:
+        # 如果 tantivy 不可用，回退到简单匹配
+        query_stems = {term: [term] for term in re.findall(r'\b\w+\b', query.lower()) or [query.lower()]}
+
+    matching_title_terms = []
+    matching_abstract_terms = []
+
+    # 为标题中的每个词进行 stemming，检查是否匹配查询词干
+    title_words = re.findall(r'\b\w+\b', title)
+    for word in title_words:
+        try:
+            stemmed = list(stemmer_analyzer.analyze(word.lower()))
+            if stemmed and stemmed[0] in query_stems:
+                # 找到匹配，添加原始大小写的词
+                matching_title_terms.append(word)
+        except:
+            # 如果 stemming 失败，检查是否直接匹配
+            if word.lower() in [t.lower() for terms in query_stems.values() for t in terms]:
+                matching_title_terms.append(word)
+
+    # 为摘要中的每个词进行 stemming，检查是否匹配查询词干
+    abstract_words = re.findall(r'\b\w+\b', abstract)
+    for word in abstract_words:
+        try:
+            stemmed = list(stemmer_analyzer.analyze(word.lower()))
+            if stemmed and stemmed[0] in query_stems:
+                # 找到匹配，添加原始大小写的词
+                matching_abstract_terms.append(word)
+        except:
+            # 如果 stemming 失败，检查是否直接匹配
+            if word.lower() in [t.lower() for terms in query_stems.values() for t in terms]:
+                matching_abstract_terms.append(word)
+
+    # 去重
+    matching_title_terms = list(set(matching_title_terms))
+    matching_abstract_terms = list(set(matching_abstract_terms))
+
+    return {
+        "title": matching_title_terms,
+        "abstract": matching_abstract_terms
+    }
+
+def highlight_text(text: str, terms: List[str], highlight_color: str = "#FFFF00") -> str:
+    """
+    在文本中高亮匹配的关键词
+
+    Args:
+        text: 原始文本
+        terms: 要高亮的关键词列表
+        highlight_color: 高亮颜色
+
+    Returns:
+        包含高亮标记的HTML文本
+    """
+    if not terms or not text:
+        return text
+
+    # 转义HTML特殊字符
+    text = str(text)
+
+    # 对每个关键词进行高亮
+    for term in terms:
+        # 使用正则表达式匹配单词边界
+        pattern = r'\b(' + re.escape(term) + r')\b'
+        text = re.sub(pattern, f'<mark style="background-color: {highlight_color}; padding: 0 2px; border-radius: 2px;">\\1</mark>', text, flags=re.IGNORECASE)
+
+    return text
 
 
 def search_papers_simple(query: str, papers: List[Dict], categories: Optional[List[str]] = None) -> List[Dict]:
@@ -194,7 +314,7 @@ def search_papers_simple(query: str, papers: List[Dict], categories: Optional[Li
         categories: 分类过滤列表
 
     Returns:
-        搜索结果列表
+        搜索结果列表，每个论文包含匹配关键词信息
     """
     if not query:
         return papers
@@ -217,7 +337,10 @@ def search_papers_simple(query: str, papers: List[Dict], categories: Optional[Li
                 if not any(cat in paper_categories for cat in categories):
                     continue
 
-            results.append(paper)
+            # 创建论文副本并添加匹配关键词信息
+            paper_with_matches = paper.copy()
+            paper_with_matches["_search_matches"] = find_matching_terms(query, paper.get("title", ""), paper.get("abstract", ""))
+            results.append(paper_with_matches)
 
     return results
 
@@ -225,25 +348,25 @@ def search_papers_simple(query: str, papers: List[Dict], categories: Optional[Li
 def search_papers(query: str, papers: List[Dict], categories: Optional[List[str]] = None) -> List[Dict]:
     """
     搜索论文 - 智能选择搜索方式
-    
+
     Args:
         query: 搜索关键词
         papers: 论文列表
         categories: 分类过滤
-        
+
     Returns:
-        搜索结果列表
+        搜索结果列表，每个论文包含匹配关键词信息
     """
     if not query or not query.strip():
         return papers
-    
+
     # 如果 BM25 搜索引擎可用，优先使用
     if SEARCH_ENGINE_AVAILABLE and st.session_state.search_mode == "bm25":
         try:
             # 初始化或获取搜索引擎
             if st.session_state.search_engine is None:
                 st.session_state.search_engine = PaperSearchEngine()
-            
+
             # 使用 BM25 搜索
             results = search_papers_bm25(
                 query=query,
@@ -252,9 +375,14 @@ def search_papers(query: str, papers: List[Dict], categories: Optional[List[str]
                 search_engine=st.session_state.search_engine,
                 rebuild_index=True  # 每次都重建索引，确保只搜索当前论文
             )
-            
+
+            # 为BM25搜索结果添加匹配关键词信息
+            for paper in results:
+                if "_search_matches" not in paper:
+                    paper["_search_matches"] = find_matching_terms(query, paper.get("title", ""), paper.get("abstract", ""))
+
             return results
-            
+
         except Exception as e:
             st.warning(f"⚠️ BM25 搜索失败，使用简单搜索: {e}")
             return search_papers_simple(query, papers, categories)
@@ -315,14 +443,22 @@ def render_paper_card(paper: Dict):
 
     # 论文容器
     with st.container():
+        # 获取搜索匹配信息
+        search_matches = paper.get("_search_matches", {"title": [], "abstract": []})
+
         # 标题
         title = paper.get("title", "Untitled")
         url = paper.get("url", "") or paper.get("pdf_url", "")
-        
+
+        # 高亮标题中的匹配关键词
+        highlighted_title = highlight_text(title, search_matches.get("title", []))
+
+        # 显示标题
         if url:
-            st.markdown(f"### [{title}]({url})")
+            # 如果有链接，使用HTML来确保高亮和链接都正常工作
+            st.markdown(f'<h3><a href="{url}" style="text-decoration: none; color: inherit;">{highlighted_title}</a></h3>', unsafe_allow_html=True)
         else:
-            st.markdown(f"### {title}")
+            st.markdown(f'<h3>{highlighted_title}</h3>', unsafe_allow_html=True)
 
         # 作者
         authors = paper.get("authors", [])
@@ -335,7 +471,7 @@ def render_paper_card(paper: Dict):
             else:
                 author_str = str(authors)
             st.markdown(f"**👥 Authors:** {author_str}")
-        
+
         # 分类和发布日期
         col1, col2 = st.columns(2)
         with col1:
@@ -345,27 +481,29 @@ def render_paper_card(paper: Dict):
                     categories_str = ", ".join(categories[:3])
                 else:
                     categories_str = str(categories)
-                st.caption(f"🏷️ Categories: {categories_str}")        
+                st.caption(f"🏷️ Categories: {categories_str}")
         with col2:
             pub_date = paper.get("published_date")
             if pub_date:
                 st.caption(f"📅 Published: {pub_date}")
-        
+
         # 摘要
         abstract = paper.get("abstract", "")
         if abstract:
             st.markdown("#### 📄 Abstract")
-            st.write(abstract)
+            # 高亮摘要中的匹配关键词
+            highlighted_abstract = highlight_text(abstract, search_matches.get("abstract", []))
+            st.markdown(highlighted_abstract, unsafe_allow_html=True)
 
         # 链接按钮
         col1, _ = st.columns([1, 4])
-        
+
         with col1:
             pdf_url = paper.get("pdf_url", "")
             if pdf_url:
                 st.link_button("📄 PDF", pdf_url)
-        
-             
+
+
         # 分割线
         st.divider()
 
@@ -496,17 +634,15 @@ def main():
                 # 在搜索区域添加导出按钮
                 if display_papers:
                     with export_col:
+                        # 使用base64编码避免媒体文件缓存问题
+                        import base64
                         csv_data = papers_to_csv(display_papers)
-                        # 使用稳定的key，避免媒体文件缓存冲突
-                        download_key = f"download_csv_{date_str}"
-                        st.download_button(
-                            label="Export CSV",
-                            data=csv_data,
-                            file_name=f"papers_{date_str}.csv",
-                            mime="text/csv",
-                            key=download_key,
-                            use_container_width=True
-                        )
+                        b64_data = base64.b64encode(csv_data.encode()).decode()
+
+                        # 使用HTML下载链接避免Streamlit媒体文件缓存
+                        download_link = f'<a href="data:text/csv;base64,{b64_data}" download="papers_{date_str}.csv" style="text-decoration: none;"><button style="background-color: #FF6B6B; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; width: 100%;">Export CSV</button></a>'
+
+                        st.markdown(download_link, unsafe_allow_html=True)
 
                 # 显示论文列表
                 for paper in display_papers:
