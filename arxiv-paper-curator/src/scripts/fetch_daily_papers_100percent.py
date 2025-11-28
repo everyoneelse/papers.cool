@@ -18,10 +18,16 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-
+import os
 from src.config import ArxivSettings
 from src.services.arxiv.client import ArxivClient
 from src.schemas.arxiv.paper import ArxivPaper
+
+from src.scripts.scrape_arxiv_passweek_and_parse import fetch_pass_week_papers
+from collections import defaultdict, OrderedDict
+
+from Bio import Entrez, Medline
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -46,7 +52,7 @@ DEFAULT_OUTPUT_DIR = "./papers_data"
 CHECKPOINT_DIR = "./checkpoints"  # Store progress
 MAX_RETRY_WAIT_SECONDS = 300  # Max 5 minutes between retries
 VERIFICATION_PASSES = 3  # Number of verification passes
-
+LOCAL_FILE_PATH = "/home/hhy/project/paper-agent/papers-agent/papers_data/"
 
 class CompleteFetcher:
     """Guarantees 100% complete data fetching."""
@@ -84,6 +90,7 @@ class CompleteFetcher:
                 logger.warning(f"Failed to load checkpoint: {e}")
         return {
             "fetched_ids": [],
+            "fetched_papers": [],  # 完整的论文数据
             "total_expected": None,
             "attempts": 0,
             "last_attempt": None,
@@ -102,6 +109,493 @@ class CompleteFetcher:
         if checkpoint_file.exists():
             checkpoint_file.unlink()
             logger.info(f"[{category}] Checkpoint cleared")
+    
+    async def async_daily_pubmed(self):
+        Entrez.email = "mzthhy@hotmail.com"
+        CORE_QUERY = '((LLM) OR (VLM)) OR "Scan Protocol"'
+        DAYS_BACK = 1
+
+        logger.info(f"start to scrape Pubmed")
+
+        async def fetch_daily_updates():
+            fetch_results = defaultdict(list)
+            metadata = {}
+
+            max_wait_hours = 1
+
+            start_time = datetime.now()
+            max_wait_seconds = 1 * 3600
+            attempt_count = 0
+            while True:
+                attempt_count+=1
+                elapsed = (datetime.now() - start_time).total_seconds()
+                logger.info(f"[PubMed] Attempt #{attempt_count} (elapsed: {elapsed/3600:.1f}h)")
+                if elapsed > max_wait_seconds:
+                    logger.error(f"Max wait time ({max_wait_hours}h) exceeded. ")
+                    return fetch_results, metadata
+
+                try:
+                    handle = Entrez.esearch(
+                            db="pubmed", 
+                            term=CORE_QUERY, 
+                            reldate=DAYS_BACK,        # 参数：最近1天
+                            datetype="edat",  # 参数：日期类型必须设为 edat (Entry Date)
+                            retmax=100
+                        )
+                    record = Entrez.read(handle)
+                    handle.close()
+                    
+                    id_list = record["IdList"]
+                    count = record["Count"]
+
+                    if not id_list:
+                        logger.info(f"✅ 过去 {DAYS_BACK} 天内没有发现新论文。")
+                        return
+
+                    logger.info(f"🚀 发现 {count} 篇新论文！准备获取详情...\n")
+                    
+                    handle = Entrez.efetch(db="pubmed", id=id_list, rettype="medline", retmode="text")
+
+                    records = Medline.parse(handle)
+
+            # 3. 遍历解析
+                    for i, record in enumerate(records):
+
+                        # --- 提取信息 ---
+                        title = record.get("TI", "No Title")
+                        pmid = record.get("PMID", "No PMID")
+                        published_date = record.get("DEP", "No Published Date")
+                        doi = record.get("LID", "No DOI")
+                        # [关键] 直接获取完整摘要 (Medline 库会自动拼接多行)
+                        abstract = record.get("AB", "No Abstract")
+                        # 提取作者
+                        authors = record.get("AU", ["Unknown Author"])
+                        # 提取分类标签
+                        journal = record.get("JT", "Unknown Journal") # 期刊
+                        pub_types = record.get("PT", [])             # 文章类型
+                        categories = (f"[{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
+                        # 提取关键词 (优先取作者关键词 OT，没有则取 MeSH)
+                        keywords = record.get("OT", [])
+                        if not keywords:
+                            # 如果没有作者关键词，尝试从 MH 中提取带星号的核心词
+                            mesh = record.get("MH", [])
+                            keywords = [m.replace("*", "") for m in mesh if "*" in m]
+
+                        # 提取 DOI (位于 LID 或 AID 字段)
+                        doi = ""
+                        if "LID" in record:
+                            # LID 格式通常是 "10.xxx [doi]"
+                            doi = next((x.replace(" [doi]", "") for x in record["LID"] if "[doi]" in x), "")
+                        elif "AID" in record:
+                            doi = next((x.replace(" [doi]", "") for x in record["AID"] if "[doi]" in x), "")
+
+                        # --- 打印漂亮的输出 ---
+                        logger.info(f"【{i+1}】 {title}")
+                        logger.info(f"🏷️  分类: [{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
+                        logger.info(f"👥 作者: {', '.join(authors[:5])}" + ("..." if len(authors)>5 else ""))
+                        if keywords:
+                            logger.info(f"🔑 关键词: {', '.join(keywords)}")
+                        logger.info(f"DP: {published_date}")
+                        
+                        logger.info(f"\n📖 完整摘要:")
+                        logger.info(f"{abstract}") # 这里输出的就是完整的一大段话
+                        
+                        logger.info(f"\n🔗 PubMed: https://pubmed.ncbi.nlm.nih.gov/ {record.get('PMID', '?')}/")
+                        if doi:
+                            logger.info(f"🔗 DOI直达: https://doi.org/ {doi}")
+                            
+                        logger.info("=" * 60) # 分割线
+
+                        try:
+                            # 清理日期字符串，移除可能的额外空格
+                            published_date = published_date.strip()
+
+                            if len(published_date.split()) == 3:  # YYYY MMM DD
+                                date = datetime.strptime(published_date, "%Y %b %d")
+                            elif len(published_date.split()) == 2:  # YYYY MMM
+                                date = datetime.strptime(published_date + " 01", "%Y %b %d")  # Add day 1
+                            elif len(published_date.split()) == 1:  # 可能是 YYYY 或 YYYYMMDD
+                                if len(published_date) == 8 and published_date.isdigit():  # YYYYMMDD 格式
+                                    date = datetime.strptime(published_date, "%Y%m%d")
+                                elif len(published_date) == 4 and published_date.isdigit():  # YYYY 格式
+                                    date = datetime.strptime(published_date + "0101", "%Y%m%d")  # Add Jan 1
+                                else:
+                                    logger.warning(f"Unexpected single-part date format: {published_date}, skipping")
+                                    continue
+                            else:
+                                logger.warning(f"Unexpected date format: {published_date}, skipping")
+                                continue
+                        except ValueError as e:
+                            logger.warning(f"Failed to parse date '{published_date}': {e}, skipping")
+                            continue
+
+
+                        fetch_results[date].append({
+                            "title": title,
+                            "arxiv_id": pmid,
+                            "published_date": date.strftime("%Y-%m-%d"),
+                            "doi": doi,
+                            "abstract": abstract,
+                            "authors": authors,
+                            "categories": categories,
+                            'pdf_url': f"https://pubmed.ncbi.nlm.nih.gov/ {pmid}/",
+                        })
+                        if date not in metadata:
+                            metadata[date] = {
+                                "expected_total": 1,
+                            }
+                        else:
+                            metadata[date]["expected_total"] += 1
+
+                    handle.close()
+                    return fetch_results, metadata
+
+                except Exception as e:
+                    logger.error(f"❌ 发生错误: {e}")
+
+                # Wait before retry (with exponential backoff)
+                retry_delay = min(retry_delay * 1.5, MAX_RETRY_WAIT_SECONDS)
+                logger.info(f"Error fetching daily PubMed updates: Waiting {retry_delay:.0f}s before next attempt...")
+                import time
+                time.sleep(retry_delay)
+            
+        fetch_results, metadata = await fetch_daily_updates()
+        sorted_fetch_results = OrderedDict(sorted(fetch_results.items(), key=lambda item: item[0], reverse=True))
+        sorted_metadata = OrderedDict(sorted(metadata.items(), key=lambda item: item[0], reverse=True))
+        papers_by_date = defaultdict(list)
+        metadata_by_date = defaultdict(list)
+        for date, results in sorted_fetch_results.items():
+            try:
+                for result in results:
+                    papers_by_date[date].append(result)
+                    metadata_by_date[date].append(sorted_metadata[date])
+            except Exception as e:
+                import pdb;pdb.set_trace()
+                logger.error(f"Error processing date {date}: {e}")
+                continue
+        for date, papers in papers_by_date.items():
+            # 为每个日期创建独立的分类数据结构
+            paper_by_category = defaultdict(list)
+            metadata_by_category = defaultdict(list)
+
+            # 只处理当前日期的论文
+            for paper in papers:
+                paper_by_category["PubMed"].append(paper)
+
+            # 为当前日期设置metadata
+            metadata_by_category["PubMed"] = {
+                "expected_total": metadata[date]["expected_total"],
+                "is_complete": True,
+                "total_attempts": 0,
+                "elapsed_hours": 0
+            }
+
+            self.save_papers_with_metadata(paper_by_category, metadata_by_category, date)
+
+
+    async def async_daily_scrape(self):
+
+        to_do_list = defaultdict(dict)
+        overall_groups = {}
+        overall_groups_ = defaultdict(dict)
+        for category in self.categories:
+            groups = fetch_pass_week_papers(category)
+            overall_groups[category] = groups
+
+        for category, groups in overall_groups.items():
+            for date, papers in groups.items():
+                dt = datetime.strptime(date, "%a, %d %b %Y")
+                overall_groups_[date][category] = []
+                for paper in papers:
+                    overall_groups_[date][category].append(paper)
+        
+        # 从fetch结果中找到最新的日期（按时间排序）
+        all_dates = list(overall_groups_.keys())
+        if all_dates:
+            # 按日期排序，找到最新的
+            sorted_dates = sorted(all_dates, key=lambda x: datetime.strptime(x, "%a, %d %b %Y"), reverse=True)
+            latest_date = sorted_dates[0]  # 最新的日期
+            old_dates = sorted_dates[1:]   # 其余的旧日期
+
+            logger.info(f"Processing latest date from fetch: {latest_date}")
+            logger.info(f"Checking existence for old dates: {old_dates}")
+
+            # 只处理最新的数据
+            date = latest_date
+            category_dict = overall_groups_[date]
+            dt = datetime.strptime(date, "%a, %d %b %Y")
+
+            # 为这个日期收集所有已存在的论文ID，按类别分组
+            existing_papers_by_category = {}
+            for category in self.categories:
+                paper_file = os.path.join(LOCAL_FILE_PATH,
+                    category, f"papers_{dt.strftime('%Y-%m-%d')}_100percent.json")
+                if os.path.exists(paper_file):
+                    with open(paper_file, 'r', encoding='utf-8') as f:
+                        papers_scraped = json.load(f)
+                    papers_lists = papers_scraped['papers']
+                    existing_papers_by_category[category] = set(paper['arxiv_id'] for paper in papers_lists)
+                else:
+                    existing_papers_by_category[category] = set()
+
+            for category, paper_ids in category_dict.items():
+                to_do_list[date][category] = []
+                existing_papers = existing_papers_by_category[category]
+
+                for paper in paper_ids:
+                    paper_id_with_version = f"{paper['id']}v{paper['version']}"
+                    # 只有当该类别还没有这篇论文时，才添加到抓取列表
+                    if paper_id_with_version not in existing_papers:
+                        to_do_list[date][category].append(paper_id_with_version)
+
+            # 检查旧数据的存在性，但不进行抓取
+            for date_str in old_dates:
+                dt = datetime.strptime(date_str, "%a, %d %b %Y")
+                logger.info(f"Checking existence for old date: {date_str}")
+
+                for category in self.categories:
+                    paper_file = os.path.join(LOCAL_FILE_PATH,
+                        category, f"papers_{dt.strftime('%Y-%m-%d')}_100percent.json")
+                    if os.path.exists(paper_file):
+                        # 检查文件是否完整（有metadata且is_complete为true）
+                        try:
+                            with open(paper_file, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            metadata = data.get('metadata', {})
+                            if metadata.get('is_complete', False):
+                                logger.info(f"[{category}] {date_str}: File exists and marked complete ✓")
+                            else:
+                                logger.warning(f"[{category}] {date_str}: File exists but incomplete ⚠️")
+                        except Exception as e:
+                            logger.warning(f"[{category}] {date_str}: Error reading file: {e}")
+                    else:
+                        logger.warning(f"[{category}] {date_str}: File missing ❌")
+
+        papers_by_date = {}
+        metadata_by_date = {}
+
+        for date_str, category_dict in to_do_list.items():
+            # Convert string date to datetime object
+            date_obj = datetime.strptime(date_str, "%a, %d %b %Y")
+            papers_by_date[date_obj.strftime('%Y-%m-%d')] = []
+            metadata_by_date[date_obj.strftime('%Y-%m-%d')] = []
+
+            for category, paper_id_list in category_dict.items():
+                logger.info(f"[{category}] Starting 100% complete daily fetch for {date_obj.strftime('%Y-%m-%d')}")
+                papers, metadata = await self.fetch_papers_by_id(date_obj.strftime('%Y-%m-%d'), category, paper_id_list, preserve_order=True)
+                papers_by_date[date_obj.strftime('%Y-%m-%d')].extend(papers)
+                metadata_by_date[date_obj.strftime('%Y-%m-%d')].append(metadata)
+
+        return papers_by_date, metadata_by_date
+        
+    async def fetch_papers_by_id(self, date, category, paper_id_list, max_wait_hours=24, preserve_order=False):
+
+        start_time = datetime.now()
+        max_wait_seconds = max_wait_hours * 3600
+
+        # Load checkpoint
+        checkpoint = self._load_checkpoint(category, date)
+        fetched_ids: Set[str] = set(checkpoint["fetched_ids"])
+        fetched_papers = checkpoint.get("fetched_papers", [])
+        total_expected = checkpoint["total_expected"]
+        attempt_count = checkpoint["attempts"]
+
+        logger.info(f"[{category}] Starting 100% complete fetch")
+        logger.info(f"[{category}] Checkpoint: {len(fetched_ids)} papers already fetched")
+        if total_expected:
+            logger.info(f"[{category}] Expected total: {total_expected}")
+
+        if total_expected is None:
+            total_expected = len(paper_id_list)
+
+        # 从checkpoint恢复已获取的论文
+        all_papers_dict = {}  # Use dict to avoid duplicates
+        for paper_data in fetched_papers:
+            # 将字典数据转换回ArxivPaper对象
+            paper = ArxivPaper(**paper_data)
+            all_papers_dict[paper.arxiv_id] = paper
+
+        logger.info(f"[{category}] Restored {len(all_papers_dict)} papers from checkpoint")
+
+        retry_delay = 10  # Initial retry delay
+        consecutive_failures = 0
+
+        while True:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            if elapsed > max_wait_seconds:
+                logger.error(
+                    f"[{category}] Max wait time ({max_wait_hours}h) exceeded. "
+                    f"Fetched {len(all_papers_dict)}/{total_expected or '?'} papers"
+                )
+                break
+
+            attempt_count += 1
+            logger.info(f"[{category}] Attempt #{attempt_count} (elapsed: {elapsed/3600:.1f}h)")
+
+            try:
+                # 计算哪些ID还没有获取
+                remaining_ids = [pid for pid in paper_id_list if pid not in fetched_ids]
+                if not remaining_ids:
+                    logger.info(f"[{category}] All {total_expected} papers already fetched from checkpoint")
+                    break
+
+                logger.info(f"[{category}] Fetching {len(remaining_ids)} remaining papers")
+
+                # Create client
+                settings = ArxivSettings(search_category=category)
+                client = ArxivClient(settings)
+
+                # 只获取剩余的论文
+                papers = await client.fetch_papers_by_ids(
+                    arxiv_ids=remaining_ids
+                )
+
+                # 按照输入的paper_id_list顺序重新排列结果
+                ordered_papers = []
+                papers_dict = {paper.arxiv_id.split("v")[0]: paper for paper in papers}  # 使用清理后的ID作为key
+                for paper_id in remaining_ids:
+                    clean_id = paper_id.split("v")[0] if "v" in paper_id else paper_id
+                    if clean_id in papers_dict:
+                        ordered_papers.append(papers_dict[clean_id])
+
+                new_papers = 0
+                # Add newly fetched papers
+                for paper in ordered_papers:
+                    if paper.arxiv_id not in all_papers_dict:
+                        all_papers_dict[paper.arxiv_id] = paper
+                        fetched_ids.add(paper.arxiv_id)
+                        new_papers += 1
+
+                logger.info(
+                    f"[{category}] Fetched {len(ordered_papers)} papers this attempt "
+                    f"({new_papers} new, {len(all_papers_dict)} total)"
+                )
+
+                # Check completeness
+                if total_expected and len(all_papers_dict) >= total_expected:
+                    logger.info(
+                        f"[{category}] ✓ COMPLETE! Fetched {len(all_papers_dict)}/{total_expected} papers"
+                    )
+                    consecutive_failures = 0
+                    break  # Success!
+                elif total_expected:
+                    missing = total_expected - len(all_papers_dict)
+                    logger.warning(
+                        f"[{category}] Incomplete: {len(all_papers_dict)}/{total_expected} "
+                        f"({missing} missing, {len(all_papers_dict)/total_expected*100:.1f}% complete)"
+                    )
+                else:
+                    logger.info(f"[{category}] Fetched {len(all_papers_dict)} papers (total unknown)")
+
+                # 更新checkpoint中的论文数据
+                fetched_papers_data = []
+                for paper in all_papers_dict.values():
+                    # 将ArxivPaper对象转换为字典以便JSON序列化
+                    paper_dict = {
+                        "arxiv_id": paper.arxiv_id,
+                        "title": paper.title,
+                        "authors": paper.authors,
+                        "abstract": paper.abstract,
+                        "categories": paper.categories,
+                        "published_date": paper.published_date,
+                        "pdf_url": paper.pdf_url,
+                    }
+                    fetched_papers_data.append(paper_dict)
+
+                # Save checkpoint
+                checkpoint["fetched_ids"] = list(fetched_ids)
+                checkpoint["fetched_papers"] = fetched_papers_data
+                checkpoint["total_expected"] = total_expected
+                checkpoint["attempts"] = attempt_count
+                self._save_checkpoint(category, date, checkpoint)
+
+                # Reset retry delay on successful fetch (even if incomplete)
+                if new_papers > 0:
+                    retry_delay = 5
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    # If no new papers for multiple attempts, might be complete
+                    if consecutive_failures >= VERIFICATION_PASSES:
+                        if total_expected is None or len(all_papers_dict) > 0:
+                            logger.info(
+                                f"[{category}] No new papers after {consecutive_failures} verification passes. "
+                                f"Considering complete with {len(all_papers_dict)} papers."
+                            )
+                            break
+
+            except Exception as e:
+                logger.error(f"[{category}] Attempt #{attempt_count} failed: {e}")
+                consecutive_failures += 1
+
+            # Wait before retry (with exponential backoff)
+            if not (total_expected and len(all_papers_dict) >= total_expected):
+                retry_delay = min(retry_delay * 1.5, MAX_RETRY_WAIT_SECONDS)
+                logger.info(f"[{category}] Waiting {retry_delay:.0f}s before next attempt...")
+                await asyncio.sleep(retry_delay)
+        
+        # Convert to simplified format
+        simplified_papers = []
+        if preserve_order:
+            # 按照输入的paper_id_list顺序保存
+            for paper_id in paper_id_list:
+                clean_id = paper_id.split("v")[0] if "v" in paper_id else paper_id
+                # 找到对应的完整ID（包含版本号）
+                matching_key = None
+                for key in all_papers_dict.keys():
+                    if key.split("v")[0] == clean_id:
+                        matching_key = key
+                        break
+
+                if matching_key:
+                    paper = all_papers_dict[matching_key]
+                    simplified_papers.append({
+                        "arxiv_id": paper.arxiv_id,
+                        "title": paper.title,
+                        "authors": paper.authors,
+                        "abstract": paper.abstract,
+                        "categories": paper.categories,
+                        "published_date": paper.published_date,
+                        "url": f"https://arxiv.org/abs/ {paper.arxiv_id}",
+                        "pdf_url": paper.pdf_url,
+                        "source_category": category,  # 添加源类别字段
+                    })
+                else:
+                    logger.warning(f"[{category}] Paper {clean_id} not found in fetched papers")
+                # 如果找不到匹配的，跳过（保持输入顺序，只添加存在的论文）
+        else:
+            # 默认顺序，直接遍历所有获取到的论文
+            for paper in all_papers_dict.values():
+                simplified_papers.append({
+                    "arxiv_id": paper.arxiv_id,
+                    "title": paper.title,
+                    "authors": paper.authors,
+                    "abstract": paper.abstract,
+                    "categories": paper.categories,
+                    "published_date": paper.published_date,
+                    "url": f"https://arxiv.org/abs/ {paper.arxiv_id}",
+                    "pdf_url": paper.pdf_url,
+                    "source_category": category,  # 添加源类别字段
+                })
+
+        # Build metadata
+        is_complete = total_expected is None or len(simplified_papers) >= total_expected
+        metadata = {
+            "category": category,
+            "date_range": f"{date}",
+            "total_attempts": attempt_count,
+            "elapsed_hours": (datetime.now() - start_time).total_seconds() / 3600,
+            "papers_fetched": len(simplified_papers),
+            "expected_total": total_expected,
+            "completeness": "100%" if is_complete else f"{len(simplified_papers)/total_expected*100:.1f}%",
+            "is_complete": is_complete,
+        }
+
+        # Clear checkpoint on success
+        if is_complete:
+            self._clear_checkpoint(category, date)
+
+        return simplified_papers, metadata
 
     async def fetch_category_complete(
         self,
@@ -253,8 +747,9 @@ class CompleteFetcher:
                 "abstract": paper.abstract,
                 "categories": paper.categories,
                 "published_date": paper.published_date,
-                "url": f"https://arxiv.org/abs/{paper.arxiv_id}",
+                "url": f"https://arxiv.org/abs/ {paper.arxiv_id}",
                 "pdf_url": paper.pdf_url,
+                "source_category": category,  # 添加源类别字段
             })
         
         # Build metadata
@@ -336,68 +831,71 @@ class CompleteFetcher:
         papers_by_category: Dict[str, List[Dict]],
         metadata_by_category: Dict[str, Dict],
         date: datetime,
-    ) -> Path:
-        """Save papers with detailed completeness metadata."""
+    ) -> List[Path]:
+        """Save papers by category with detailed completeness metadata."""
         date_str = date.strftime("%Y-%m-%d")
-        output_file = self.output_dir / f"papers_{date_str}_100percent.json"
-        
-        # Combine all papers and remove duplicates
-        all_papers = []
+        saved_files = []
+
+        # Save each category separately
         for category, papers in papers_by_category.items():
-            all_papers.extend(papers)
-        
-        unique_papers = {}
-        for paper in all_papers:
-            arxiv_id = paper["arxiv_id"]
-            if arxiv_id not in unique_papers:
-                unique_papers[arxiv_id] = paper
-        
-        papers_list = list(unique_papers.values())
-        
-        # Check overall completeness
-        all_complete = all(meta["is_complete"] for meta in metadata_by_category.values())
-        total_expected = sum(meta.get("expected_total", 0) or 0 for meta in metadata_by_category.values())
-        
-        # Build output
-        output_data = {
-            "metadata": {
-                "fetch_mode": "100_percent_complete",
-                "fetch_date": datetime.now().isoformat(),
-                "paper_date": date_str,
-                "total_papers": len(papers_list),
-                "total_expected": total_expected,
-                "completeness_status": "100_COMPLETE" if all_complete else "INCOMPLETE",
-                "all_categories_complete": all_complete,
-                "categories": metadata_by_category,
-            },
-            "papers": papers_list,
-        }
-        
-        # Save
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
-        # Summary
+            category_dir = self.output_dir / category
+            category_dir.mkdir(parents=True, exist_ok=True)
+
+            output_file = category_dir / f"papers_{date_str}_100percent.json"
+            metadata = metadata_by_category.get(category, {})
+
+            # Build output for this category
+            output_data = {
+                "metadata": {
+                    "fetch_mode": "100_percent_complete",
+                    "fetch_date": datetime.now().isoformat(),
+                    "paper_date": date_str,
+                    "category": category,
+                    "total_papers": len(papers),
+                    "expected_total": metadata.get("expected_total", 0),
+                    "completeness": metadata.get("completeness", "unknown"),
+                    "is_complete": metadata.get("is_complete", False),
+                    "total_attempts": metadata.get("total_attempts", 0),
+                    "elapsed_hours": metadata.get("elapsed_hours", 0),
+                },
+                "papers": papers,  # 保持该类别页面的原始顺序
+            }
+
+            # Save
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, ensure_ascii=False, indent=2)
+
+            saved_files.append(output_file)
+
+            # Log completion status for this category
+            if metadata.get("is_complete"):
+                logger.info(f"✅ [{category}] 100% COMPLETE: {len(papers)} papers saved to {output_file}")
+            else:
+                logger.warning(f"⚠️ [{category}] INCOMPLETE: {len(papers)}/{metadata.get('expected_total', '?')} papers ({metadata.get('completeness', 'unknown')}) saved to {output_file}")
+
+        # Overall summary
+        total_papers = sum(len(papers) for papers in papers_by_category.values())
+        all_complete = all(meta.get("is_complete", False) for meta in metadata_by_category.values())
+
         if all_complete:
             logger.info("=" * 80)
-            logger.info(f"✅ 100% COMPLETE SUCCESS!")
-            logger.info(f"✅ Saved {len(papers_list)} papers to {output_file}")
-            logger.info(f"✅ All {len(papers_by_category)} categories complete")
+            logger.info(f"✅ ALL CATEGORIES 100% COMPLETE SUCCESS!")
+            logger.info(f"✅ Total saved {total_papers} papers across {len(papers_by_category)} categories")
             logger.info("=" * 80)
         else:
             incomplete_cats = [
                 cat for cat, meta in metadata_by_category.items()
-                if not meta["is_complete"]
+                if not meta.get("is_complete", False)
             ]
             logger.warning("=" * 80)
-            logger.warning(f"⚠️ INCOMPLETE: {len(incomplete_cats)} categories not 100% complete")
+            logger.warning(f"⚠️ SOME CATEGORIES INCOMPLETE: {len(incomplete_cats)} categories not 100% complete")
             for cat in incomplete_cats:
                 meta = metadata_by_category[cat]
-                logger.warning(f"  - {cat}: {meta['completeness']}")
-            logger.warning(f"⚠️ Saved {len(papers_list)} papers to {output_file}")
+                logger.warning(f"  - {cat}: {meta.get('completeness', 'unknown')}")
+            logger.warning(f"⚠️ Total saved {total_papers} papers across {len(papers_by_category)} categories")
             logger.warning("=" * 80)
-        
-        return output_file
+
+        return saved_files
 
     async def run_daily_complete(
         self,
@@ -405,28 +903,55 @@ class CompleteFetcher:
         max_wait_hours: int = 24,
     ):
         """
-        Run complete fetch for a single date.
-        
+        Run complete fetch for all available dates from past week.
+
         Args:
-            date: Date to fetch (default: yesterday)
+            date: If specified, only fetch this date. If None, fetch all available dates.
             max_wait_hours: Max hours to spend per category
         """
-        if date is None:
-            # Default to yesterday (give arXiv time to process)
-            date = datetime.now() - timedelta(days=1)
-        
-        logger.info(f"Starting 100% complete daily fetch for {date.strftime('%Y-%m-%d')}")
-        
-        # Fetch all categories
-        papers, metadata = await self.fetch_date_complete(
-            date=date,
-            max_wait_hours=max_wait_hours,
-        )
-        
-        # Save results
-        output_file = self.save_papers_with_metadata(papers, metadata, date)
-        
-        return output_file
+
+        # Fetch all categories and dates
+        papers_by_date, metadata_by_date = await self.async_daily_scrape()
+
+        # If a specific date is requested, filter to only that date
+        if date is not None:
+            date_str = date.strftime('%Y-%m-%d')
+            if date_str in papers_by_date:
+                papers_by_date = {date_str: papers_by_date[date_str]}
+                metadata_by_date = {date_str: metadata_by_date[date_str]}
+            else:
+                logger.info(f"No papers found for date {date_str}")
+                return [], []
+
+        saved_files = []
+        for current_date_str, papers in papers_by_date.items():
+            current_date = datetime.strptime(current_date_str, "%Y-%m-%d")
+            metadata_list = metadata_by_date[current_date_str]
+
+            papers_by_category = {}
+            metadata_by_category = {}
+
+            for paper in papers:
+                # 使用source_category分组，保持原始抓取顺序
+                source_category = paper.get("source_category", paper["categories"][0] if paper["categories"] else "unknown")
+                if source_category not in papers_by_category:
+                    papers_by_category[source_category] = []
+                papers_by_category[source_category].append(paper)
+
+            # Group metadata by category
+            for metadata in metadata_list:
+                category = metadata["category"]
+                metadata_by_category[category] = metadata
+
+            # Save results for this date (by category)
+            category_files = self.save_papers_with_metadata(papers_by_category, metadata_by_category, current_date)
+            saved_files.extend(category_files)
+
+        if not saved_files:
+            logger.warning(f"No data found to save")
+            return None
+
+        return saved_files[0] if len(saved_files) == 1 else saved_files
 
     async def run_continuous_complete(
         self,
@@ -475,6 +1000,64 @@ class CompleteFetcher:
                 await asyncio.sleep(3600)
 
 
+    async def run_fetch_by_custom_ids(
+        self,
+        custom_id_list: List[str],
+        output_file: Optional[str] = None,
+        max_wait_hours: int = 24,
+    ):
+        """
+        使用用户指定的ID列表获取论文，并按照列表顺序保存
+
+        Args:
+            custom_id_list: 用户指定的arxiv ID列表
+            category: 分类（用于API设置）
+            output_file: 输出文件路径，如果不指定则自动生成
+            max_wait_hours: 最大等待时间
+        """
+        logger.info("=" * 80)
+        logger.info("Starting CUSTOM ID LIST fetch")
+        logger.info(f"Category: custom_list_mode")
+        logger.info(f"Total IDs: {len(custom_id_list)}")
+        logger.info("=" * 80)
+
+        # 使用fetch_papers_by_id方法获取论文，保持顺序
+        papers, metadata = await self.fetch_papers_by_id(
+            date="1900-01-01",
+            category="custom_list_mode",
+            paper_id_list=custom_id_list,
+            max_wait_hours=max_wait_hours,
+            preserve_order=False
+        )
+
+        # 生成输出文件名
+        if output_file is None:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            output_file = self.output_dir / f"papers_custom_list_{timestamp}.json"
+
+        # 保存论文
+        output_data = {
+            "metadata": {
+                "fetch_mode": "custom_id_list",
+                "fetch_date": datetime.now().isoformat(),
+                "category": "custom_list_mode",
+                "total_papers": len(papers),
+                "expected_total": len(custom_id_list),
+                "preserved_order": False,
+            },
+            "papers": papers,
+        }
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
+
+        logger.info("=" * 80)
+        logger.info(f"✅ Saved {len(papers)} papers to {output_file}")
+        logger.info("=" * 80)
+
+        return output_file
+
+
 async def main():
     """Main entry point."""
     import argparse
@@ -485,7 +1068,7 @@ async def main():
     parser.add_argument(
         "--date",
         type=str,
-        help="Fetch papers for specific date (YYYY-MM-DD)"
+        help="Fetch papers for specific date (YYYY-MM-DD). If not specified, fetch all available dates from past week"
     )
     parser.add_argument(
         "--output-dir",
@@ -516,7 +1099,14 @@ async def main():
         default=24,
         help="Hours between checks in continuous mode (default: 24)"
     )
-    
+    parser.add_argument(
+        "--Fetch-Type",
+        type=str,
+        choices=['arXiv', 'PubMed', 'all'],
+        default='all',
+        help="Type of fetch (default: all)"
+    )
+
     args = parser.parse_args()
     
     # Create fetcher
@@ -532,16 +1122,24 @@ async def main():
             max_wait_per_category=args.max_wait_hours,
         )
     else:
-        # Single date mode
+        # Process all available dates from past week
+        date = None
         if args.date:
             date = datetime.strptime(args.date, "%Y-%m-%d")
-        else:
-            date = datetime.now() - timedelta(days=1)
-        
-        await fetcher.run_daily_complete(
-            date=date,
-            max_wait_hours=args.max_wait_hours,
-        )
+
+        if args.Fetch_Type == 'arXiv':
+            await fetcher.run_daily_complete(
+                date=date,
+                max_wait_hours=args.max_wait_hours,
+            )
+        elif args.Fetch_Type == 'PubMed':
+            await fetcher.async_daily_pubmed()
+        elif args.Fetch_Type == 'all':
+            await fetcher.async_daily_pubmed()
+            await fetcher.run_daily_complete(
+                date=date,
+                max_wait_hours=args.max_wait_hours,
+            )
 
 
 if __name__ == "__main__":
