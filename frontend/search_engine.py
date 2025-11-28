@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import logging
 
+# 创建英文 stemmer analyzer
+tokenizer = tantivy.Tokenizer.whitespace()
+stemmer_filter = tantivy.Filter.stemmer('english')
+stemmer_analyzer = tantivy.TextAnalyzerBuilder(tokenizer).filter(stemmer_filter).build()
+
 # 配置日志
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -32,13 +38,13 @@ class PaperSearchEngine:
         # 定义 schema
         self.schema_builder = tantivy.SchemaBuilder()
         self.schema_builder.add_text_field("id", stored=True)
-        self.schema_builder.add_text_field("title", stored=True)
-        self.schema_builder.add_text_field("abstract", stored=True)
+        self.schema_builder.add_text_field("title", stored=True, tokenizer_name="en_stem")
+        self.schema_builder.add_text_field("abstract", stored=True, tokenizer_name="en_stem")
         self.schema_builder.add_text_field("authors", stored=True)
         self.schema_builder.add_text_field("categories", stored=True)
         self.schema_builder.add_text_field("published_date", stored=True)
         self.schema = self.schema_builder.build()
-        
+
         # 创建或打开索引
         try:
             self.index = tantivy.Index(self.schema, path=str(self.index_path))
@@ -47,15 +53,19 @@ class PaperSearchEngine:
             # 索引不存在，创建新的
             self.index = tantivy.Index(self.schema)
             logger.info(f"Created new index at {self.index_path}")
-        
+
+        # 注册 stemmer tokenizer
+        self.index.register_tokenizer("en_stem", stemmer_analyzer)
+
         self.writer = None
     
-    def build_index_from_papers(self, papers: List[Dict]):
+    def build_index_from_papers(self, papers: List[Dict], keywords_dicts: Dict[str, List[str]] = {}):
         """
         从论文列表构建搜索索引
         
         Args:
             papers: 论文列表，每个论文是一个字典
+            keywords_lists: 关键词列表，每个关键词列表是一个列表
         """
         logger.info(f"Building search index from {len(papers)} papers...")
         
@@ -64,7 +74,7 @@ class PaperSearchEngine:
             writer = self.index.writer(heap_size=50_000_000)  # 50MB
             
             # 添加每篇论文到索引
-            for paper in papers:
+            for idx, paper in enumerate(papers):
                 try:
                     # 准备文档数据
                     doc_data = {
@@ -75,7 +85,6 @@ class PaperSearchEngine:
                         "categories": ' '.join(paper.get('categories', [])),
                         "published_date": str(paper.get('published_date', '')),
                     }
-                    
                     # 创建 tantivy 文档
                     doc = tantivy.Document()
                     for field, value in doc_data.items():
@@ -100,7 +109,7 @@ class PaperSearchEngine:
         self, 
         query: str, 
         max_results: int = 100,
-        filter_categories: Optional[List[str]] = None
+        filter_categories: Optional[List[str]] = None,
     ) -> List[Dict]:
         """
         搜索论文（使用 BM25 排序）
@@ -109,7 +118,7 @@ class PaperSearchEngine:
             query: 搜索关键词
             max_results: 最大返回结果数
             filter_categories: 过滤的分类列表
-            
+            return_score: 是否返回相关性分数
         Returns:
             搜索结果列表，按相关性（BM25 分数）排序
         """
@@ -121,31 +130,11 @@ class PaperSearchEngine:
             self.index.reload()
             searcher = self.index.searcher()
             
-            # 构建查询 - 兼容不同版本的 tantivy API
-            try:
-                # 尝试新版本 API (0.21+)
-                if hasattr(tantivy, 'QueryParser'):
-                    query_parser = tantivy.QueryParser.for_index(
-                        self.index,
-                        ["title", "abstract", "authors"]
-                    )
-                    parsed_query = query_parser.parse_query(query)
-                else:
-                    # 使用索引对象的方法
-                    parsed_query = self.index.parse_query(
-                        query,
-                        ["title", "abstract", "authors"]
-                    )
-            except AttributeError:
-                # 备用方案：使用更简单的 API
-                # 获取 schema 中的字段
-                title_field = self.schema.get_field("title")
-                abstract_field = self.schema.get_field("abstract")
-                authors_field = self.schema.get_field("authors")
-                
-                # 创建多字段查询
-                query_lower = query.lower()
-                parsed_query = self.index.parse_query(query_lower)
+            # 使用 Index 的 parse_query 方法解析查询（搜索标题、摘要、作者）
+            parsed_query = self.index.parse_query(
+                query,
+                default_field_names=["title", "abstract", "authors"]
+            )
             
             # 执行搜索（BM25 排序）
             search_results = searcher.search(parsed_query, limit=max_results)
@@ -154,15 +143,18 @@ class PaperSearchEngine:
             results = []
             for score, doc_address in search_results.hits:
                 doc = searcher.doc(doc_address)
-                
-                # 提取文档字段
+
+                # 使用 to_dict() 获取所有字段值
+                doc_dict = doc.to_dict()
+
+                # 提取文档字段（tantivy返回的都是列表，需要取第一个元素）
                 result = {
-                    'id': doc.get_first('id'),
-                    'title': doc.get_first('title'),
-                    'abstract': doc.get_first('abstract'),
-                    'authors': doc.get_first('authors', '').split() if doc.get_first('authors') else [],
-                    'categories': doc.get_first('categories', '').split() if doc.get_first('categories') else [],
-                    'published_date': doc.get_first('published_date'),
+                    'id': doc_dict.get('id', [None])[0],
+                    'title': doc_dict.get('title', [None])[0],
+                    'abstract': doc_dict.get('abstract', [None])[0],
+                    'authors': doc_dict.get('authors', [''])[0].split() if doc_dict.get('authors') and doc_dict['authors'][0] else [],
+                    'categories': doc_dict.get('categories', [''])[0].split() if doc_dict.get('categories') and doc_dict['categories'][0] else [],
+                    'published_date': doc_dict.get('published_date', [None])[0],
                     'search_score': float(score),  # BM25 相关性分数
                 }
                 
@@ -178,8 +170,6 @@ class PaperSearchEngine:
             
         except Exception as e:
             logger.error(f"Error searching for '{query}': {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return []
     
     def search_by_title_only(self, title: str, max_results: int = 10) -> List[Dict]:
@@ -197,24 +187,20 @@ class PaperSearchEngine:
             self.index.reload()
             searcher = self.index.searcher()
             
-            # 兼容不同版本的 API
-            try:
-                if hasattr(tantivy, 'QueryParser'):
-                    query_parser = tantivy.QueryParser.for_index(self.index, ["title"])
-                    parsed_query = query_parser.parse_query(title)
-                else:
-                    parsed_query = self.index.parse_query(title, ["title"])
-            except AttributeError:
-                parsed_query = self.index.parse_query(title)
+            parsed_query = self.index.parse_query(
+                title,
+                default_field_names=["title"]
+            )
             
             search_results = searcher.search(parsed_query, limit=max_results)
             
             results = []
             for score, doc_address in search_results.hits:
                 doc = searcher.doc(doc_address)
+                doc_dict = doc.to_dict()
                 results.append({
-                    'id': doc.get_first('id'),
-                    'title': doc.get_first('title'),
+                    'id': doc_dict.get('id', [None])[0],
+                    'title': doc_dict.get('title', [None])[0],
                     'search_score': float(score)
                 })
             
@@ -236,7 +222,7 @@ class PaperSearchEngine:
             searcher = self.index.searcher()
             
             # 获取文档总数
-            num_docs = searcher.num_docs()
+            num_docs = searcher.num_docs
             
             return {
                 'num_documents': num_docs,
@@ -272,7 +258,7 @@ class PaperSearchEngine:
 # ===== 兼容性包装函数（可选） =====
 
 def search_papers_bm25(
-    query: str, 
+    query: str,
     papers: List[Dict],
     categories: Optional[List[str]] = None,
     search_engine: Optional[PaperSearchEngine] = None,
@@ -302,11 +288,14 @@ def search_papers_bm25(
     stats = search_engine.get_index_stats()
     if stats['num_documents'] == 0 or rebuild_index:
         logger.info("Building search index...")
+        if rebuild_index:
+            # 如果强制重建，先清空索引
+            search_engine.clear_index()
         search_engine.build_index_from_papers(papers)
     
     # 执行搜索
     search_results = search_engine.search(
-        query, 
+        query,
         max_results=1000,
         filter_categories=categories
     )
