@@ -52,7 +52,7 @@ DEFAULT_OUTPUT_DIR = "./papers_data"
 CHECKPOINT_DIR = "./checkpoints"  # Store progress
 MAX_RETRY_WAIT_SECONDS = 300  # Max 5 minutes between retries
 VERIFICATION_PASSES = 3  # Number of verification passes
-LOCAL_FILE_PATH = "/home/hhy/project/paper-agent/papers-agent/papers_data/"
+LOCAL_FILE_PATH = "./papers_data/"
 
 class CompleteFetcher:
     """Guarantees 100% complete data fetching."""
@@ -110,12 +110,18 @@ class CompleteFetcher:
             checkpoint_file.unlink()
             logger.info(f"[{category}] Checkpoint cleared")
     
-    async def async_daily_pubmed(self):
+    async def async_daily_pubmed(self, date: Optional[datetime] = None):
         Entrez.email = "mzthhy@hotmail.com"
-        CORE_QUERY = '((LLM) OR (VLM)) OR "Scan Protocol"'
-        DAYS_BACK = 1
+        CORE_QUERY = '((LLM) OR (VLM)) OR (Scan Protocol)'
 
-        logger.info(f"start to scrape Pubmed")
+        # Determine the date to fetch - either specified date or yesterday
+        if date is not None:
+            target_date = date
+            logger.info(f"start to scrape Pubmed for date: {target_date.strftime('%Y-%m-%d')}")
+        else:
+            # Default to yesterday's date for the past 24 hours
+            target_date = datetime.now() - timedelta(days=1)
+            logger.info(f"start to scrape Pubmed for yesterday: {target_date.strftime('%Y-%m-%d')}")
 
         async def fetch_daily_updates():
             fetch_results = defaultdict(list)
@@ -135,13 +141,19 @@ class CompleteFetcher:
                     return fetch_results, metadata
 
                 try:
+                    # Always use date range parameters for precise control
+                    # Format date as YYYY/MM/DD for PubMed API
+                    mindate = target_date.strftime("%Y/%m/%d")
+                    maxdate = (target_date + timedelta(days=1)).strftime("%Y/%m/%d")
+                    logger.info(f"Searching PubMed with date range: {mindate} to {maxdate}")
                     handle = Entrez.esearch(
-                            db="pubmed", 
-                            term=CORE_QUERY, 
-                            reldate=DAYS_BACK,        # 参数：最近1天
-                            datetype="edat",  # 参数：日期类型必须设为 edat (Entry Date)
-                            retmax=100
-                        )
+                        db="pubmed", 
+                        term=CORE_QUERY, 
+                        mindate=mindate,
+                        maxdate=maxdate,
+                        datetype="edat",  # 参数：日期类型必须设为 edat (Entry Date)
+                        retmax=100
+                    )
                     record = Entrez.read(handle)
                     handle.close()
                     
@@ -149,7 +161,7 @@ class CompleteFetcher:
                     count = record["Count"]
 
                     if not id_list:
-                        logger.info(f"✅ 过去 {DAYS_BACK} 天内没有发现新论文。")
+                        logger.info(f"✅ {target_date.strftime('%Y-%m-%d')} 没有发现新论文。")
                         return
 
                     logger.info(f"🚀 发现 {count} 篇新论文！准备获取详情...\n")
@@ -211,14 +223,14 @@ class CompleteFetcher:
                             published_date = published_date.strip()
 
                             if len(published_date.split()) == 3:  # YYYY MMM DD
-                                date = datetime.strptime(published_date, "%Y %b %d")
+                                paper_date = datetime.strptime(published_date, "%Y %b %d")
                             elif len(published_date.split()) == 2:  # YYYY MMM
-                                date = datetime.strptime(published_date + " 01", "%Y %b %d")  # Add day 1
+                                paper_date = datetime.strptime(published_date + " 01", "%Y %b %d")  # Add day 1
                             elif len(published_date.split()) == 1:  # 可能是 YYYY 或 YYYYMMDD
                                 if len(published_date) == 8 and published_date.isdigit():  # YYYYMMDD 格式
-                                    date = datetime.strptime(published_date, "%Y%m%d")
+                                    paper_date = datetime.strptime(published_date, "%Y%m%d")
                                 elif len(published_date) == 4 and published_date.isdigit():  # YYYY 格式
-                                    date = datetime.strptime(published_date + "0101", "%Y%m%d")  # Add Jan 1
+                                    paper_date = datetime.strptime(published_date + "0101", "%Y%m%d")  # Add Jan 1
                                 else:
                                     logger.warning(f"Unexpected single-part date format: {published_date}, skipping")
                                     continue
@@ -229,23 +241,26 @@ class CompleteFetcher:
                             logger.warning(f"Failed to parse date '{published_date}': {e}, skipping")
                             continue
 
+                        # Only include papers from the target date
+                        if paper_date.date() != target_date.date():
+                            continue
 
-                        fetch_results[date].append({
+                        fetch_results[paper_date].append({
                             "title": title,
                             "arxiv_id": pmid,
-                            "published_date": date.strftime("%Y-%m-%d"),
+                            "published_date": paper_date.strftime("%Y-%m-%d"),
                             "doi": doi,
                             "abstract": abstract,
                             "authors": authors,
                             "categories": categories,
                             'pdf_url': f"https://pubmed.ncbi.nlm.nih.gov/ {pmid}/",
                         })
-                        if date not in metadata:
-                            metadata[date] = {
+                        if paper_date not in metadata:
+                            metadata[paper_date] = {
                                 "expected_total": 1,
                             }
                         else:
-                            metadata[date]["expected_total"] += 1
+                            metadata[paper_date]["expected_total"] += 1
 
                     handle.close()
                     return fetch_results, metadata
@@ -921,7 +936,11 @@ class CompleteFetcher:
                 metadata_by_date = {date_str: metadata_by_date[date_str]}
             else:
                 logger.info(f"No papers found for date {date_str}")
-                return [], []
+                papers_by_date = {}
+                metadata_by_date = {}
+            
+            # Also fetch PubMed for the specified date
+            await self.async_daily_pubmed(date=date)
 
         saved_files = []
         for current_date_str, papers in papers_by_date.items():
@@ -1133,9 +1152,9 @@ async def main():
                 max_wait_hours=args.max_wait_hours,
             )
         elif args.Fetch_Type == 'PubMed':
-            await fetcher.async_daily_pubmed()
+            await fetcher.async_daily_pubmed(date=date)
         elif args.Fetch_Type == 'all':
-            await fetcher.async_daily_pubmed()
+            await fetcher.async_daily_pubmed(date=date)
             await fetcher.run_daily_complete(
                 date=date,
                 max_wait_hours=args.max_wait_hours,
