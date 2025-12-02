@@ -49,6 +49,54 @@ ARXIV_CATEGORIES = {
     "Statistics - Machine Learning (stat.ML)": "stat.ML",
 }
 
+# PubMed project keywords configuration
+PUBMED_PROJECTS = {
+    "Protocol": [
+        "Large Language Model, Protocol",
+        "LLM, Protocol"
+    ],
+    "Artifacts": [
+        "Large Language Model, Artifacts",
+        "LLM, Artifacts"
+    ],
+    "CT_Image_Quality": [
+        "Large Language Model, CT Image quality assessment",
+        "LLM, Image quality, CT Image quality assessment"
+    ],
+    "MR_Image_Quality": [
+        "Large Language Model, MR Image quality assessment",
+        "LLM, Image quality, MR Image quality assessment"
+    ],
+    "PET_Image_Quality": [
+        "Large Language Model, PET Image quality assessment",
+        "LLM, Image quality, PET Image quality assessment"
+    ],
+    "US_Image_Quality": [
+        "Large Language Model, US Image quality assessment",
+        "LLM, Image quality, US Image quality assessment"
+    ],
+    "Autonomous_CT": [
+        "Large Language Model, Autonomous CT",
+        "LLM, Autonomous CT"
+    ],
+    "Autonomous_MR": [
+        "Large Language Model, Autonomous MR",
+        "LLM, Autonomous MR"
+    ],
+    "Autonomous_PET": [
+        "Large Language Model, Autonomous PET",
+        "LLM, Autonomous PET"
+    ],
+    "Autonomous_US": [
+        "Large Language Model, Autonomous US",
+        "LLM, Autonomous US"
+    ],
+    "Agent": [
+        "Large Language Model, Agent",
+        "LLM, Agent"
+    ]
+}
+
 # Configuration
 DEFAULT_OUTPUT_DIR = "./papers_data"
 CHECKPOINT_DIR = "./checkpoints"  # Store progress
@@ -114,7 +162,6 @@ class CompleteFetcher:
     
     async def async_daily_pubmed(self, date: Optional[datetime] = None):
         Entrez.email = "mzthhy@hotmail.com"
-        CORE_QUERY = '((LLM) OR (VLM)) OR (Scan Protocol)'
 
         # Determine the date to fetch - either specified date or yesterday
         if date is not None:
@@ -126,187 +173,205 @@ class CompleteFetcher:
             logger.info(f"start to scrape Pubmed for yesterday: {target_date.strftime('%Y-%m-%d')}")
 
         async def fetch_daily_updates():
-            fetch_results = defaultdict(list)
-            metadata = {}
+            # Store results by project and date
+            fetch_results_by_project = defaultdict(lambda: defaultdict(list))
+            metadata_by_project = defaultdict(dict)
 
             max_wait_hours = 1
-
             start_time = datetime.now()
             max_wait_seconds = 1 * 3600
-            attempt_count = 0
-            while True:
-                attempt_count+=1
-                elapsed = (datetime.now() - start_time).total_seconds()
-                logger.info(f"[PubMed] Attempt #{attempt_count} (elapsed: {elapsed/3600:.1f}h)")
-                if elapsed > max_wait_seconds:
-                    logger.error(f"Max wait time ({max_wait_hours}h) exceeded. ")
-                    return fetch_results, metadata
 
-                try:
-                    # Always use date range parameters for precise control
-                    # Format date as YYYY/MM/DD for PubMed API
-                    mindate = target_date.strftime("%Y/%m/%d")
-                    maxdate = (target_date + timedelta(days=1)).strftime("%Y/%m/%d")
-                    logger.info(f"Searching PubMed with date range: {mindate} to {maxdate}")
-                    handle = Entrez.esearch(
-                        db="pubmed", 
-                        term=CORE_QUERY, 
-                        mindate=mindate,
-                        maxdate=maxdate,
-                        datetype="edat",  # 参数：日期类型必须设为 edat (Entry Date)
-                        retmax=100
-                    )
-                    record = Entrez.read(handle)
-                    handle.close()
-                    
-                    id_list = record["IdList"]
-                    count = record["Count"]
-
-                    if not id_list:
-                        logger.info(f"✅ {target_date.strftime('%Y-%m-%d')} 没有发现新论文。")
-                        return
-
-                    logger.info(f"🚀 发现 {count} 篇新论文！准备获取详情...\n")
-                    
-                    handle = Entrez.efetch(db="pubmed", id=id_list, rettype="medline", retmode="text")
-
-                    records = Medline.parse(handle)
-
-            # 3. 遍历解析
-                    for i, record in enumerate(records):
-
-                        # --- 提取信息 ---
-                        title = record.get("TI", "No Title")
-                        pmid = record.get("PMID", "No PMID")
-                        published_date = record.get("EDAT", "No Published Date")
-                        doi = record.get("LID", "No DOI")
-                        # [关键] 直接获取完整摘要 (Medline 库会自动拼接多行)
-                        abstract = record.get("AB", "No Abstract")
-                        # 提取作者
-                        authors = record.get("AU", ["Unknown Author"])
-                        # 提取分类标签
-                        journal = record.get("JT", "Unknown Journal") # 期刊
-                        pub_types = record.get("PT", [])             # 文章类型
-                        categories = (f"[{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
-                        # 提取关键词 (优先取作者关键词 OT，没有则取 MeSH)
-                        keywords = record.get("OT", [])
-                        if not keywords:
-                            # 如果没有作者关键词，尝试从 MH 中提取带星号的核心词
-                            mesh = record.get("MH", [])
-                            keywords = [m.replace("*", "") for m in mesh if "*" in m]
-
-                        # 提取 DOI (位于 LID 或 AID 字段)
-                        doi = ""
-                        if "LID" in record:
-                            # LID 格式通常是 "10.xxx [doi]"
-                            doi = next((x.replace(" [doi]", "") for x in record["LID"] if "[doi]" in x), "")
-                        elif "AID" in record:
-                            doi = next((x.replace(" [doi]", "") for x in record["AID"] if "[doi]" in x), "")
-
-                        # --- 打印漂亮的输出 ---
-                        logger.info(f"【{i+1}】 {title}")
-                        logger.info(f"🏷️  分类: [{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
-                        logger.info(f"👥 作者: {', '.join(authors[:5])}" + ("..." if len(authors)>5 else ""))
-                        if keywords:
-                            logger.info(f"🔑 关键词: {', '.join(keywords)}")
-                        logger.info(f"DP: {published_date}")
-                        
-                        logger.info(f"\n📖 完整摘要:")
-                        logger.info(f"{abstract}") # 这里输出的就是完整的一大段话
-                        
-                        logger.info(f"\n🔗 PubMed: https://pubmed.ncbi.nlm.nih.gov/ {record.get('PMID', '?')}/")
-                        if doi:
-                            logger.info(f"🔗 DOI直达: https://doi.org/ {doi}")
-                            
-                        logger.info("=" * 60) # 分割线
-
-                        try:
-                            # EDAT 字段可能是列表或字符串，需要先处理
-                            if isinstance(published_date, list):
-                                published_date = published_date[0] if published_date else "No Published Date"
-                            
-                            # 清理日期字符串，移除可能的额外空格
-                            published_date = published_date.strip()
-                            
-                            # EDAT 格式: "YYYY/MM/DD HH:MM" 或 "YYYY/MM/DD"
-                            if "/" in published_date:
-                                # 移除可能的时间部分 (HH:MM)
-                                date_part = published_date.split()[0]  # 取空格前的日期部分
-                                paper_date = datetime.strptime(date_part, "%Y/%m/%d")
-                            else:
-                                # 兼容其他可能的格式
-                                logger.warning(f"Unexpected EDAT format: {published_date}, skipping")
-                                continue
-                        except (ValueError, IndexError) as e:
-                            logger.warning(f"Failed to parse EDAT '{published_date}': {e}, skipping")
-                            continue
-
-                        # Only include papers from the target date
-                        #if paper_date.date() != target_date.date():
-                        #    logger.info(f"Skipping paper {title} from {paper_date.strftime('%Y-%m-%d')} because it is not the target date {target_date.strftime('%Y-%m-%d')}")
-                        #    continue
-
-                        fetch_results[paper_date].append({
-                            "title": title,
-                            "arxiv_id": pmid,
-                            "published_date": paper_date.strftime("%Y-%m-%d"),
-                            "doi": doi,
-                            "abstract": abstract,
-                            "authors": authors,
-                            "categories": categories,
-                            'pdf_url': f"https://pubmed.ncbi.nlm.nih.gov/ {pmid}/",
-                        })
-                        if paper_date not in metadata:
-                            metadata[paper_date] = {
-                                "expected_total": 1,
-                            }
-                        else:
-                            metadata[paper_date]["expected_total"] += 1
-
-                    handle.close()
-                    return fetch_results, metadata
-
-                except Exception as e:
-                    logger.error(f"❌ 发生错误: {e}")
-
-                # Wait before retry (with exponential backoff)
-                retry_delay = min(retry_delay * 1.5, MAX_RETRY_WAIT_SECONDS)
-                logger.info(f"Error fetching daily PubMed updates: Waiting {retry_delay:.0f}s before next attempt...")
-                import time
-                time.sleep(retry_delay)
+            # Format date as YYYY/MM/DD for PubMed API
+            mindate = target_date.strftime("%Y/%m/%d")
+            maxdate = (target_date + timedelta(days=1)).strftime("%Y/%m/%d")
             
-        fetch_results, metadata = await fetch_daily_updates()
-        sorted_fetch_results = OrderedDict(sorted(fetch_results.items(), key=lambda item: item[0], reverse=True))
-        sorted_metadata = OrderedDict(sorted(metadata.items(), key=lambda item: item[0], reverse=True))
-        papers_by_date = defaultdict(list)
-        metadata_by_date = defaultdict(list)
-        for date, results in sorted_fetch_results.items():
-            try:
-                for result in results:
-                    papers_by_date[date].append(result)
-                    metadata_by_date[date].append(sorted_metadata[date])
-            except Exception as e:
-                import pdb;pdb.set_trace()
-                logger.error(f"Error processing date {date}: {e}")
-                continue
-        for date, papers in papers_by_date.items():
-            # 为每个日期创建独立的分类数据结构
-            paper_by_category = defaultdict(list)
-            metadata_by_category = defaultdict(list)
+            # Loop through each project
+            for project_name, keyword_variants in PUBMED_PROJECTS.items():
+                logger.info(f"\n{'='*60}")
+                logger.info(f"[PubMed - {project_name}] Starting search")
+                logger.info(f"{'='*60}")
+                
+                # Build query: OR all variants for this project
+                query_terms = []
+                for variant in keyword_variants:
+                    # Split by comma and build query
+                    terms = [term.strip() for term in variant.split(',')]
+                    # Join terms with AND
+                    query_terms.append('(' + ' AND '.join([f'({t})' for t in terms]) + ')')
+                
+                # Join all variants with OR
+                project_query = ' OR '.join(query_terms)
+                logger.info(f"[PubMed - {project_name}] Query: {project_query}")
+                
+                attempt_count = 0
+                while True:
+                    attempt_count += 1
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    logger.info(f"[PubMed - {project_name}] Attempt #{attempt_count} (elapsed: {elapsed/3600:.1f}h)")
+                    
+                    if elapsed > max_wait_seconds:
+                        logger.error(f"[PubMed - {project_name}] Max wait time ({max_wait_hours}h) exceeded.")
+                        break
 
-            # 只处理当前日期的论文
-            for paper in papers:
-                paper_by_category["PubMed"].append(paper)
+                    try:
+                        logger.info(f"[PubMed - {project_name}] Searching with date range: {mindate} to {maxdate}")
+                        handle = Entrez.esearch(
+                            db="pubmed", 
+                            term=project_query, 
+                            mindate=mindate,
+                            maxdate=maxdate,
+                            datetype="edat",
+                            retmax=100
+                        )
+                        record = Entrez.read(handle)
+                        handle.close()
+                        
+                        id_list = record["IdList"]
+                        count = record["Count"]
 
-            # 为当前日期设置metadata
-            metadata_by_category["PubMed"] = {
-                "expected_total": metadata[date]["expected_total"],
-                "is_complete": True,
-                "total_attempts": 0,
-                "elapsed_hours": 0
-            }
+                        if not id_list:
+                            logger.info(f"✅ [{project_name}] {target_date.strftime('%Y-%m-%d')} 没有发现新论文。")
+                            metadata_by_project[project_name][target_date] = {
+                                "expected_total": 0,
+                            }
+                            break
 
-            self.save_papers_with_metadata(paper_by_category, metadata_by_category, date)
+                        logger.info(f"🚀 [{project_name}] 发现 {count} 篇新论文！准备获取详情...\n")
+                        
+                        handle = Entrez.efetch(db="pubmed", id=id_list, rettype="medline", retmode="text")
+                        records = Medline.parse(handle)
+
+                        # Parse records
+                        for i, record in enumerate(records):
+
+                            # --- 提取信息 ---
+                            title = record.get("TI", "No Title")
+                            pmid = record.get("PMID", "No PMID")
+                            published_date = record.get("EDAT", "No Published Date")
+                            doi = record.get("LID", "No DOI")
+                            # [关键] 直接获取完整摘要 (Medline 库会自动拼接多行)
+                            abstract = record.get("AB", "No Abstract")
+                            # 提取作者
+                            authors = record.get("AU", ["Unknown Author"])
+                            # 提取分类标签
+                            journal = record.get("JT", "Unknown Journal") # 期刊
+                            pub_types = record.get("PT", [])             # 文章类型
+                            categories = (f"[{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
+                            # 提取关键词 (优先取作者关键词 OT，没有则取 MeSH)
+                            keywords = record.get("OT", [])
+                            if not keywords:
+                                # 如果没有作者关键词，尝试从 MH 中提取带星号的核心词
+                                mesh = record.get("MH", [])
+                                keywords = [m.replace("*", "") for m in mesh if "*" in m]
+
+                            # 提取 DOI (位于 LID 或 AID 字段)
+                            doi = ""
+                            if "LID" in record:
+                                # LID 格式通常是 "10.xxx [doi]"
+                                doi = next((x.replace(" [doi]", "") for x in record["LID"] if "[doi]" in x), "")
+                            elif "AID" in record:
+                                doi = next((x.replace(" [doi]", "") for x in record["AID"] if "[doi]" in x), "")
+
+                            # --- 打印漂亮的输出 ---
+                            logger.info(f"【{project_name} - {i+1}】 {title}")
+                            logger.info(f"🏷️  分类: [{journal}] " + "".join([f"[{pt}]" for pt in pub_types if pt != 'Journal Article']))
+                            logger.info(f"👥 作者: {', '.join(authors[:5])}" + ("..." if len(authors)>5 else ""))
+                            if keywords:
+                                logger.info(f"🔑 关键词: {', '.join(keywords)}")
+                            logger.info(f"DP: {published_date}")
+                            
+                            logger.info(f"\n📖 完整摘要:")
+                            logger.info(f"{abstract}") # 这里输出的就是完整的一大段话
+                            
+                            logger.info(f"\n🔗 PubMed: https://pubmed.ncbi.nlm.nih.gov/{record.get('PMID', '?')}/")
+                            if doi:
+                                logger.info(f"🔗 DOI直达: https://doi.org/{doi}")
+                                
+                            logger.info("=" * 60) # 分割线
+
+                            try:
+                                # EDAT 字段可能是列表或字符串，需要先处理
+                                if isinstance(published_date, list):
+                                    published_date = published_date[0] if published_date else "No Published Date"
+                                
+                                # 清理日期字符串，移除可能的额外空格
+                                published_date = published_date.strip()
+                                
+                                # EDAT 格式: "YYYY/MM/DD HH:MM" 或 "YYYY/MM/DD"
+                                if "/" in published_date:
+                                    # 移除可能的时间部分 (HH:MM)
+                                    date_part = published_date.split()[0]  # 取空格前的日期部分
+                                    paper_date = datetime.strptime(date_part, "%Y/%m/%d")
+                                else:
+                                    # 兼容其他可能的格式
+                                    logger.warning(f"Unexpected EDAT format: {published_date}, skipping")
+                                    continue
+                            except (ValueError, IndexError) as e:
+                                logger.warning(f"Failed to parse EDAT '{published_date}': {e}, skipping")
+                                continue
+
+                            # Store paper by project and date
+                            fetch_results_by_project[project_name][paper_date].append({
+                                "title": title,
+                                "arxiv_id": pmid,
+                                "published_date": paper_date.strftime("%Y-%m-%d"),
+                                "doi": doi,
+                                "abstract": abstract,
+                                "authors": authors,
+                                "categories": categories,
+                                'pdf_url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                            })
+                            
+                            if paper_date not in metadata_by_project[project_name]:
+                                metadata_by_project[project_name][paper_date] = {
+                                    "expected_total": 1,
+                                }
+                            else:
+                                metadata_by_project[project_name][paper_date]["expected_total"] += 1
+
+                        handle.close()
+                        break  # Successfully fetched for this project
+
+                    except Exception as e:
+                        logger.error(f"❌ [{project_name}] 发生错误: {e}")
+                        
+                        # Wait before retry
+                        retry_delay = 10
+                        logger.info(f"[{project_name}] Waiting {retry_delay:.0f}s before next attempt...")
+                        import time
+                        time.sleep(retry_delay)
+            
+            return fetch_results_by_project, metadata_by_project
+            
+        fetch_results_by_project, metadata_by_project = await fetch_daily_updates()
+        
+        # Process results by project and date
+        for project_name, date_results in fetch_results_by_project.items():
+            sorted_fetch_results = OrderedDict(sorted(date_results.items(), key=lambda item: item[0], reverse=True))
+            
+            for date, papers in sorted_fetch_results.items():
+                # Create category structure for this project
+                paper_by_category = defaultdict(list)
+                metadata_by_category = defaultdict(dict)
+                
+                # Use project name as category under PubMed
+                category_name = f"PubMed_{project_name}"
+                
+                # Add papers to this category
+                for paper in papers:
+                    paper_by_category[category_name].append(paper)
+                
+                # Set metadata for this category
+                project_metadata = metadata_by_project.get(project_name, {}).get(date, {})
+                metadata_by_category[category_name] = {
+                    "expected_total": project_metadata.get("expected_total", len(papers)),
+                    "is_complete": True,
+                    "total_attempts": 1,
+                    "elapsed_hours": 0
+                }
+                
+                # Save papers for this project
+                self.save_papers_with_metadata(paper_by_category, metadata_by_category, date)
 
 
     async def async_daily_scrape(self, target_date=None):
