@@ -16,12 +16,26 @@ stemmer_filter = tantivy.Filter.stemmer('english')
 # 实际使用时可能需要在查询预处理阶段手动移除停用词
 stemmer_analyzer = tantivy.TextAnalyzerBuilder(tokenizer).filter(stemmer_filter).build()
 
-# 常见英文停用词列表（用于查询预处理）
-STOPWORDS = {
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-    'to', 'was', 'will', 'with'
-}
+# 获取 NLTK 停用词（带缓存和自动下载）
+def get_stopwords():
+    try:
+        import nltk
+        try:
+            return set(nltk.corpus.stopwords.words('english'))
+        except LookupError:
+            nltk.download('stopwords', quiet=True)
+            return set(nltk.corpus.stopwords.words('english'))
+    except ImportError:
+        # 后备方案：如果未安装 nltk，使用内置的最小列表
+        return {
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+            'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+            'to', 'was', 'will', 'with', 'i', 'me', 'my', 'myself', 'we', 'our',
+            'ours', 'ourselves', 'you', "you're", "you've", "you'll", "you'd",
+            'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his'
+        }
+
+STOPWORDS = get_stopwords()
 
 # 配置日志
 
