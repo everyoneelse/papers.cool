@@ -7,10 +7,21 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import logging
 
-# 创建英文 stemmer analyzer
+# 创建英文 stemmer analyzer with stopwords
 tokenizer = tantivy.Tokenizer.whitespace()
 stemmer_filter = tantivy.Filter.stemmer('english')
+
+# 添加停用词过滤（常见的英文停用词）
+# 注意：Tantivy 可能没有内置的停用词列表，这里展示概念
+# 实际使用时可能需要在查询预处理阶段手动移除停用词
 stemmer_analyzer = tantivy.TextAnalyzerBuilder(tokenizer).filter(stemmer_filter).build()
+
+# 常见英文停用词列表（用于查询预处理）
+STOPWORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+    'to', 'was', 'will', 'with'
+}
 
 # 配置日志
 
@@ -110,6 +121,9 @@ class PaperSearchEngine:
         query: str, 
         max_results: int = 100,
         filter_categories: Optional[List[str]] = None,
+        phrase_search: bool = False,
+        require_all_words: bool = False,
+        remove_stopwords: bool = False,
     ) -> List[Dict]:
         """
         搜索论文（使用 BM25 排序）
@@ -118,7 +132,15 @@ class PaperSearchEngine:
             query: 搜索关键词
             max_results: 最大返回结果数
             filter_categories: 过滤的分类列表
-            return_score: 是否返回相关性分数
+            phrase_search: 是否使用短语搜索（默认False）
+                - True: "large language model" 要求三个词连续出现
+                - False: 不使用短语搜索
+            require_all_words: 是否要求所有词都出现（默认False）
+                - True: large AND language AND model 三个词都必须出现但可以不连续
+                - False: large OR language OR model 任意词出现即可
+            remove_stopwords: 是否移除停用词（默认False）
+                - True: 移除常见英文停用词（a, an, the, in, on, 等）
+                - False: 保留所有词
         Returns:
             搜索结果列表，按相关性（BM25 分数）排序
         """
@@ -130,9 +152,30 @@ class PaperSearchEngine:
             self.index.reload()
             searcher = self.index.searcher()
             
+            # 处理查询字符串
+            search_query = query.strip()
+            
+            # 预处理：移除停用词（如果启用）
+            if remove_stopwords:
+                words = [w for w in search_query.lower().split() if w not in STOPWORDS]
+                if words:
+                    search_query = ' '.join(words)
+                else:
+                    # 如果所有词都是停用词，返回空结果
+                    logger.warning(f"Query contains only stopwords: '{query}'")
+                    return []
+            
+            if phrase_search and ' ' in search_query and not search_query.startswith('"'):
+                # 短语搜索：用引号包裹（严格连续匹配）
+                search_query = f'"{search_query}"'
+            elif require_all_words and ' ' in search_query:
+                # AND 查询：所有词都必须出现但可以不连续
+                words = search_query.split()
+                search_query = ' AND '.join(words)
+            
             # 使用 Index 的 parse_query 方法解析查询（搜索标题、摘要、作者）
             parsed_query = self.index.parse_query(
-                query,
+                search_query,
                 default_field_names=["title", "abstract", "authors"]
             )
             
