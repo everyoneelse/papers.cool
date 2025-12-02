@@ -1,4 +1,6 @@
 """
+import requests
+import xml.etree.ElementTree as ET
 100% Complete Data Fetching Strategy for arXiv Papers
 100% 完整数据获取策略
 
@@ -242,8 +244,9 @@ class CompleteFetcher:
                             continue
 
                         # Only include papers from the target date
-                        if paper_date.date() != target_date.date():
-                            continue
+                        #if paper_date.date() != target_date.date():
+                        #    logger.info(f"Skipping paper {title} from {paper_date.strftime('%Y-%m-%d')} because it is not the target date {target_date.strftime('%Y-%m-%d')}")
+                        #    continue
 
                         fetch_results[paper_date].append({
                             "title": title,
@@ -308,7 +311,7 @@ class CompleteFetcher:
             self.save_papers_with_metadata(paper_by_category, metadata_by_category, date)
 
 
-    async def async_daily_scrape(self):
+    async def async_daily_scrape(self, target_date=None):
 
         to_do_list = defaultdict(dict)
         overall_groups = {}
@@ -335,33 +338,48 @@ class CompleteFetcher:
             logger.info(f"Processing latest date from fetch: {latest_date}")
             logger.info(f"Checking existence for old dates: {old_dates}")
 
-            # 只处理最新的数据
-            date = latest_date
-            category_dict = overall_groups_[date]
-            dt = datetime.strptime(date, "%a, %d %b %Y")
-
-            # 为这个日期收集所有已存在的论文ID，按类别分组
-            existing_papers_by_category = {}
-            for category in self.categories:
-                paper_file = os.path.join(LOCAL_FILE_PATH,
-                    category, f"papers_{dt.strftime('%Y-%m-%d')}_100percent.json")
-                if os.path.exists(paper_file):
-                    with open(paper_file, 'r', encoding='utf-8') as f:
-                        papers_scraped = json.load(f)
-                    papers_lists = papers_scraped['papers']
-                    existing_papers_by_category[category] = set(paper['arxiv_id'] for paper in papers_lists)
+            # 如果指定了目标日期，只处理该日期，否则处理最新日期
+            if target_date:
+                # 将目标日期转换为相同的格式进行匹配
+                target_date_str = target_date.strftime("%a, %d %b %Y")
+                if target_date_str in overall_groups_:
+                    dates_to_process = [target_date_str]
+                    logger.info(f"Processing specified date: {target_date_str}")
                 else:
-                    existing_papers_by_category[category] = set()
+                    logger.warning(f"Specified date {target_date_str} not found in available dates")
+                    dates_to_process = []
+            else:
+                # 默认只处理最新的数据
+                dates_to_process = sorted_dates
+                logger.info(f"Processing sorted date: {sorted_dates}")
 
-            for category, paper_ids in category_dict.items():
-                to_do_list[date][category] = []
-                existing_papers = existing_papers_by_category[category]
+            # 处理选定的日期
+            for date in dates_to_process:
+                category_dict = overall_groups_[date]
+                dt = datetime.strptime(date, "%a, %d %b %Y")
 
-                for paper in paper_ids:
-                    paper_id_with_version = f"{paper['id']}v{paper['version']}"
-                    # 只有当该类别还没有这篇论文时，才添加到抓取列表
-                    if paper_id_with_version not in existing_papers:
-                        to_do_list[date][category].append(paper_id_with_version)
+                # 为这个日期收集所有已存在的论文ID，按类别分组
+                existing_papers_by_category = {}
+                for category in self.categories:
+                    paper_file = os.path.join(LOCAL_FILE_PATH,
+                        category, f"papers_{dt.strftime('%Y-%m-%d')}_100percent.json")
+                    if os.path.exists(paper_file):
+                        with open(paper_file, 'r', encoding='utf-8') as f:
+                            papers_scraped = json.load(f)
+                        papers_lists = papers_scraped['papers']
+                        existing_papers_by_category[category] = set(paper['arxiv_id'] for paper in papers_lists)
+                    else:
+                        existing_papers_by_category[category] = set()
+
+                for category, paper_ids in category_dict.items():
+                    to_do_list[date][category] = []
+                    existing_papers = existing_papers_by_category[category]
+
+                    for paper in paper_ids:
+                        paper_id_with_version = f"{paper['id']}v{paper['version']}"
+                        # 只有当该类别还没有这篇论文时，才添加到抓取列表
+                        if paper_id_with_version not in existing_papers:
+                            to_do_list[date][category].append(paper_id_with_version)
 
             # 检查旧数据的存在性，但不进行抓取
             for date_str in old_dates:
@@ -873,7 +891,7 @@ class CompleteFetcher:
                     "total_attempts": metadata.get("total_attempts", 0),
                     "elapsed_hours": metadata.get("elapsed_hours", 0),
                 },
-                "papers": papers,  # 保持该类别页面的原始顺序
+                "papers": papers,
             }
 
             # Save
@@ -926,21 +944,18 @@ class CompleteFetcher:
         """
 
         # Fetch all categories and dates
-        papers_by_date, metadata_by_date = await self.async_daily_scrape()
+        papers_by_date, metadata_by_date = await self.async_daily_scrape(target_date=date)
 
-        # If a specific date is requested, filter to only that date
+        # If a specific date is requested and not found, log it
         if date is not None:
             date_str = date.strftime('%Y-%m-%d')
-            if date_str in papers_by_date:
-                papers_by_date = {date_str: papers_by_date[date_str]}
-                metadata_by_date = {date_str: metadata_by_date[date_str]}
-            else:
+            if date_str not in papers_by_date:
                 logger.info(f"No papers found for date {date_str}")
                 papers_by_date = {}
                 metadata_by_date = {}
             
-            # Also fetch PubMed for the specified date
-            await self.async_daily_pubmed(date=date)
+            ## Also fetch PubMed for the specified date
+            #await self.async_daily_pubmed(date=date)
 
         saved_files = []
         for current_date_str, papers in papers_by_date.items():
