@@ -178,7 +178,7 @@ class CompleteFetcher:
                         # --- 提取信息 ---
                         title = record.get("TI", "No Title")
                         pmid = record.get("PMID", "No PMID")
-                        published_date = record.get("DEP", "No Published Date")
+                        published_date = record.get("EDAT", "No Published Date")
                         doi = record.get("LID", "No DOI")
                         # [关键] 直接获取完整摘要 (Medline 库会自动拼接多行)
                         abstract = record.get("AB", "No Abstract")
@@ -221,26 +221,24 @@ class CompleteFetcher:
                         logger.info("=" * 60) # 分割线
 
                         try:
+                            # EDAT 字段可能是列表或字符串，需要先处理
+                            if isinstance(published_date, list):
+                                published_date = published_date[0] if published_date else "No Published Date"
+                            
                             # 清理日期字符串，移除可能的额外空格
                             published_date = published_date.strip()
-
-                            if len(published_date.split()) == 3:  # YYYY MMM DD
-                                paper_date = datetime.strptime(published_date, "%Y %b %d")
-                            elif len(published_date.split()) == 2:  # YYYY MMM
-                                paper_date = datetime.strptime(published_date + " 01", "%Y %b %d")  # Add day 1
-                            elif len(published_date.split()) == 1:  # 可能是 YYYY 或 YYYYMMDD
-                                if len(published_date) == 8 and published_date.isdigit():  # YYYYMMDD 格式
-                                    paper_date = datetime.strptime(published_date, "%Y%m%d")
-                                elif len(published_date) == 4 and published_date.isdigit():  # YYYY 格式
-                                    paper_date = datetime.strptime(published_date + "0101", "%Y%m%d")  # Add Jan 1
-                                else:
-                                    logger.warning(f"Unexpected single-part date format: {published_date}, skipping")
-                                    continue
+                            
+                            # EDAT 格式: "YYYY/MM/DD HH:MM" 或 "YYYY/MM/DD"
+                            if "/" in published_date:
+                                # 移除可能的时间部分 (HH:MM)
+                                date_part = published_date.split()[0]  # 取空格前的日期部分
+                                paper_date = datetime.strptime(date_part, "%Y/%m/%d")
                             else:
-                                logger.warning(f"Unexpected date format: {published_date}, skipping")
+                                # 兼容其他可能的格式
+                                logger.warning(f"Unexpected EDAT format: {published_date}, skipping")
                                 continue
-                        except ValueError as e:
-                            logger.warning(f"Failed to parse date '{published_date}': {e}, skipping")
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"Failed to parse EDAT '{published_date}': {e}, skipping")
                             continue
 
                         # Only include papers from the target date
